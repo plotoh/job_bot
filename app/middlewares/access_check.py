@@ -4,14 +4,9 @@ from typing import Callable, Dict, Any, Awaitable
 
 from app.database.models import AsyncSessionLocal, Account
 from app.config import settings
-from aiogram import F
 
 
 class AccessMiddleware(BaseMiddleware):
-    """
-    Middleware для проверки наличия аккаунта пользователя в БД.
-    Если пользователь не найден и не является админом, отправляет сообщение об отказе.
-    """
     async def __call__(
         self,
         handler: Callable[[Message, Dict[str, Any]], Awaitable[Any]],
@@ -26,12 +21,12 @@ class AccessMiddleware(BaseMiddleware):
 
         # Если аккаунта нет и пользователь не админ — блокируем
         if not account and user_id != settings.ADMIN_ID:
-            # Отправляем сообщение об ошибке (для callback нужно ответить)
             if isinstance(event, Message):
-                await event.answer("🚫 У тебя нет доступа. Но вероятно его и не должно быть) Сорянчик")
+                await event.answer("🚫 У тебя нет доступа. Но его и не должно быть) \nПока")
             elif isinstance(event, CallbackQuery):
                 await event.answer("🚫 Нет доступа", show_alert=True)
             return  # Прерываем обработку
 
-        # Всё хорошо — передаём управление дальше
+        # Передаём user_id в data для использования в хэндлерах (например, для клавиатуры)
+        data['user_id'] = user_id
         return await handler(event, data)

@@ -5,7 +5,9 @@ from aiogram import Bot, Dispatcher
 
 from app.config import settings
 from app.database.db import init_db
-from app.handlers import common, vacancy, stats, account, test_mode, admin
+from app.handlers import common
+from app.handlers.user import router as user_router
+from app.handlers.admin import router as admin_router
 from app.logger import setup_logging
 from app.middlewares.access_check import AccessMiddleware
 
@@ -27,12 +29,9 @@ async def main():
     dp.message.middleware(AccessMiddleware())
     dp.callback_query.middleware(AccessMiddleware())
 
-    dp.include_router(admin.router)
     dp.include_router(common.router)
-    dp.include_router(vacancy.router)
-    dp.include_router(stats.router)
-    dp.include_router(account.router)
-    dp.include_router(test_mode.router)
+    dp.include_router(user_router)
+    dp.include_router(admin_router)
 
     try:
         logger.info("Bot polling started")

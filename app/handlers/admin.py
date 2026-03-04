@@ -91,6 +91,13 @@ async def admin_panel(message: types.Message, state: FSMContext):
     await admin_main_menu(message, state)
 
 
+@router.message(F.text == "👑 Админ-панель")
+async def admin_button_handler(message: types.Message, state: FSMContext):
+    if message.from_user.id == settings.ADMIN_ID:
+        await admin_panel(message, state)
+    else:
+        await message.answer("У вас нет доступа.")
+        
 # ----- Добавление аккаунта (из меню) -----
 @router.callback_query(F.data == "admin_add_account")
 async def admin_add_account_callback(callback: CallbackQuery, state: FSMContext):
