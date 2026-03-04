@@ -1,18 +1,33 @@
-import os
-from dotenv import load_dotenv
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
 
-load_dotenv()
 
-BOT_TOKEN = os.getenv("JOB_BOT_TOKEN")
-if not BOT_TOKEN:
-    raise ValueError("No BOT_TOKEN found in environment variables")
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore')
 
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+    BOT_TOKEN: str
 
-DB_CONFIG = {
-    "host": os.getenv("DDB_HOST", "localhost"),
-    "port": int(os.getenv("DDB_PORT", 5432)),
-    "database": os.getenv("DDB_NAME", "job_bot_db"),
-    "user": os.getenv("DDB_USER", "postgres"),
-    "password": os.getenv("DDB_PASSWORD", ""),
-}
+    DB_HOST: str = 'localhost'
+    DB_PORT: int = 5432
+    DB_NAME: str = 'job_bot'
+    DB_USER: str = 'postgres'
+    DB_PASSWORD: str = ''
+
+    REDIS_URL: str = 'redis://redis:6379/0'
+    CELERY_BROKER_URL: str = 'redis://redis:6379/1'
+    CELERY_RESULT_BACKEND: str = 'redis://redis:6379/2'
+
+    OLLAMA_BASE_URL: str = 'http://ollama:11434'
+    OLLAMA_MODEL: str = 'llama3.1:8b'
+
+    PROXY_LIST_PATH: str = '/app/data/proxies.txt'  # файл с прокси (один на строку)
+    ENCRYPTION_KEY: str = Field(..., env='ENCRYPTION_KEY')  # для шифрования паролей
+
+    LOG_LEVEL: str = 'INFO'
+
+    # Периоды задач (в минутах)
+    PARSE_INTERVAL: int = 60
+    CHECK_INVITATIONS_INTERVAL: int = 30
+
+
+settings = Settings()

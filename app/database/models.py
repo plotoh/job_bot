@@ -1,101 +1,84 @@
-from asyncpg import Pool
+from sqlalchemy import JSON
+from sqlalchemy.ext.asyncio import AsyncAttrs, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy import String, Text, Boolean, DateTime, ForeignKey, Integer, JSON
+from datetime import datetime
+from app.config import settings
+
+engine = create_async_engine(
+    f"postgresql+asyncpg://{settings.DB_USER}:{settings.DB_PASSWORD}@{settings.DB_HOST}:{settings.DB_PORT}/{settings.DB_NAME}",
+    echo=False
+)
+AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
-# ===== Инициализация таблиц =====
-async def init_tables(pool: Pool):
-    """Создаёт таблицы, если их нет."""
-    async with pool.acquire() as conn:
-        # Таблица вакансий
-        await conn.execute('''
-            CREATE TABLE IF NOT EXISTS vacancies (
-                id SERIAL PRIMARY KEY,
-                vacancy_id VARCHAR(255) UNIQUE NOT NULL,
-                vacancy_text TEXT,
-                check_word VARCHAR(255),
-                has_cover BOOLEAN DEFAULT FALSE,
-                has_response BOOLEAN DEFAULT FALSE,
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        ''')
-        # Таблица откликов
-        await conn.execute('''
-            CREATE TABLE IF NOT EXISTS responses (
-                id SERIAL PRIMARY KEY,
-                vacancy_id INTEGER REFERENCES vacancies(id) ON DELETE CASCADE,
-                cover_letter TEXT,
-                status VARCHAR(50) DEFAULT 'pending',  -- pending, sent, error
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        ''')
+class Base(AsyncAttrs, DeclarativeBase):
+    pass
 
 
-# ===== CRUD для вакансий =====
-async def add_vacancy(pool: Pool, vacancy_id: str, vacancy_text: str, check_word: str = None):
-    """Добавляет новую вакансию, если её ещё нет. Возвращает id записи."""
-    async with pool.acquire() as conn:
-        result = await conn.fetchrow('''
-            INSERT INTO vacancies (vacancy_id, vacancy_text, check_word)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (vacancy_id) DO NOTHING
-            RETURNING id
-        ''', vacancy_id, vacancy_text, check_word)
-        return result['id'] if result else None
+class Account(Base):
+    __tablename__ = 'accounts'
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    password_encrypted: Mapped[str] = mapped_column(Text)  # зашифрованный пароль
+    cookies: Mapped[dict] = mapped_column(JSON, default={})
+    resume_id: Mapped[str] = mapped_column(String(50))  # id резюме на hh
+    proxy: Mapped[str] = mapped_column(String(200), nullable=True)  # конкретный прокси для аккаунта или пул
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+
+    # связи
+    vacancies = relationship("Vacancy", back_populates="account")
+    responses = relationship("Response", back_populates="account")
+    invitations = relationship("Invitation", back_populates="account")
+
+    search_filter: Mapped[dict] = mapped_column(JSON,
+                                                default={})  # например, {"url": "https://hh.ru/search/vacancy?text=Python&area=1", "max_pages": 1}
+    resume_text: Mapped[str] = mapped_column(Text, default="")  # текст резюме
 
 
-async def get_vacancies_without_response(pool: Pool):
-    """Возвращает список вакансий, на которые ещё не было отклика."""
-    async with pool.acquire() as conn:
-        rows = await conn.fetch('''
-            SELECT * FROM vacancies
-            WHERE has_response = FALSE
-            ORDER BY created_at DESC
-        ''')
-        return [dict(row) for row in rows]
+class Vacancy(Base):
+    __tablename__ = 'vacancies'
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    hh_id: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)  # id вакансии на hh
+    title: Mapped[str] = mapped_column(String(500))
+    url: Mapped[str] = mapped_column(String(500))
+    description: Mapped[str] = mapped_column(Text)
+    check_word: Mapped[str] = mapped_column(String(200), nullable=True)
+    has_response: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+
+    account = relationship("Account", back_populates="vacancies")
+    responses = relationship("Response", back_populates="vacancy")
 
 
-async def update_vacancy_response(pool: Pool, vacancy_db_id: int):
-    """Отмечает вакансию как имеющую отклик (has_response = TRUE)."""
-    async with pool.acquire() as conn:
-        await conn.execute('''
-            UPDATE vacancies SET has_response = TRUE
-            WHERE id = $1
-        ''', vacancy_db_id)
+class Response(Base):
+    __tablename__ = 'responses'
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey('accounts.id'))
+    vacancy_id: Mapped[int] = mapped_column(ForeignKey('vacancies.id'))
+    cover_letter: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default='pending')  # pending, sent, error
+    sent_at: Mapped[datetime] = mapped_column(nullable=True)
+    error_message: Mapped[str] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+
+    account = relationship("Account", back_populates="responses")
+    vacancy = relationship("Vacancy", back_populates="responses")
 
 
-# ===== CRUD для откликов =====
-async def add_response(pool: Pool, vacancy_db_id: int, cover_letter: str, status: str = 'pending'):
-    """Добавляет запись об отклике и связывает с вакансией."""
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            # Вставляем отклик
-            response_id = await conn.fetchval('''
-                INSERT INTO responses (vacancy_id, cover_letter, status)
-                VALUES ($1, $2, $3)
-                RETURNING id
-            ''', vacancy_db_id, cover_letter, status)
-            # Обновляем флаг у вакансии
-            await conn.execute('''
-                UPDATE vacancies SET has_response = TRUE
-                WHERE id = $1
-            ''', vacancy_db_id)
-            return response_id
+class Invitation(Base):
+    __tablename__ = 'invitations'
 
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey('accounts.id'))
+    vacancy_hh_id: Mapped[str] = mapped_column(String(50))
+    company: Mapped[str] = mapped_column(String(200))
+    message: Mapped[str] = mapped_column(Text, nullable=True)
+    invited_at: Mapped[datetime] = mapped_column()
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 
-async def get_responses_by_status(pool: Pool, status: str = 'pending'):
-    """Получить все отклики с определённым статусом."""
-    async with pool.acquire() as conn:
-        rows = await conn.fetch('''
-            SELECT * FROM responses
-            WHERE status = $1
-            ORDER BY created_at DESC
-        ''', status)
-        return [dict(row) for row in rows]
-
-
-async def update_response_status(pool: Pool, response_id: int, new_status: str):
-    """Обновить статус отклика."""
-    async with pool.acquire() as conn:
-        await conn.execute('''
-            UPDATE responses SET status = $1
-            WHERE id = $2
-        ''', new_status, response_id)
+    account = relationship("Account", back_populates="invitations")
