@@ -7,6 +7,7 @@ def get_main_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="🔍 Парсинг вакансий по фильтру")],
             [KeyboardButton(text="📝 Парсинг вакансии и генерация сопроводительного")],
             [KeyboardButton(text="📊 Статистика")],
+            [KeyboardButton(text="📋 Мои данные")],
             [KeyboardButton(text="🧪 Тестовый режим")],
             [KeyboardButton(text="⚙️ Настройки аккаунта")],
         ],

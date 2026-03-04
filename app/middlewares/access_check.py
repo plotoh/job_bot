@@ -4,6 +4,7 @@ from typing import Callable, Dict, Any, Awaitable
 
 from app.database.models import AsyncSessionLocal, Account
 from app.config import settings
+from aiogram import F
 
 
 class AccessMiddleware(BaseMiddleware):
@@ -18,10 +19,6 @@ class AccessMiddleware(BaseMiddleware):
         data: Dict[str, Any]
     ) -> Any:
         user_id = event.from_user.id
-
-        # Пропускаем команды /start и /help без проверки
-        if isinstance(event, Message) and event.text and event.text.startswith(('/start', '/help')):
-            return await handler(event, data)
 
         # Проверяем наличие аккаунта в БД
         async with AsyncSessionLocal() as session:

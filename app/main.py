@@ -27,12 +27,12 @@ async def main():
     dp.message.middleware(AccessMiddleware())
     dp.callback_query.middleware(AccessMiddleware())
 
+    dp.include_router(admin.router)
     dp.include_router(common.router)
     dp.include_router(vacancy.router)
     dp.include_router(stats.router)
     dp.include_router(account.router)
     dp.include_router(test_mode.router)
-    dp.include_router(admin.router)  # если ещё не подключили
 
     try:
         logger.info("Bot polling started")

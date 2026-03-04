@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Установка системных зависимостей для Playwright и общих нужд
+# Установка системных зависимостей для Playwright
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
@@ -23,17 +23,16 @@ RUN apt-get update && apt-get install -y \
     libxss1 \
     libxrandr2 \
     libgtk-3-0 \
-    libgdk-pixbuf2.0-0 \
+    libgdk-pixbuf-xlib-2.0-0 \
     libpango-1.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Устанавливаем браузеры для Playwright (включая системные зависимости)
+# Устанавливаем браузеры для Playwright
 RUN playwright install chromium --with-deps
 
 COPY . .
 
-# Команда по умолчанию (может быть переопределена в docker-compose)
 CMD ["python", "-m", "app.main"]

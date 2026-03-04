@@ -1,28 +1,31 @@
 # app/handlers/admin.py
+import logging
+from datetime import date
+
 from aiogram import types, F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from sqlalchemy import select
+from sqlalchemy import select, func
 
-from app.handlers.test_mode import show_test_menu
-from app.utils.encryption import encrypt_password
-from datetime import date
-
-from app.database.models import AsyncSessionLocal, Account
 from app.config import settings
+from app.database.models import AsyncSessionLocal, Account, Response, Invitation
 from app.keyboards.reply import get_main_keyboard
+from app.utils.encryption import encrypt_password
+from app.handlers.test_mode import show_test_menu
+
+logger = logging.getLogger(__name__)
 
 router = Router()
 
 
-# Фильтр для проверки, является ли пользователь администратором
-async def is_admin(message: types.Message) -> bool:
+# ----- Фильтр для проверки администратора -----
+def is_admin(message: types.Message) -> bool:
     return message.from_user.id == settings.ADMIN_ID
 
 
-# Состояния FSM для редактирования аккаунта
+# ----- Состояния FSM -----
 class EditAccountStates(StatesGroup):
     choosing_account = State()
     choosing_action = State()
@@ -31,8 +34,8 @@ class EditAccountStates(StatesGroup):
     editing_proxy = State()
     editing_limit = State()
     editing_limit_range = State()
-    editing_interval_range = State()      # добавлено
-    editing_work_hours = State()          # добавлено
+    editing_interval_range = State()
+    editing_work_hours = State()
 
 
 class AddAccountStates(StatesGroup):
@@ -45,8 +48,107 @@ class AddAccountStates(StatesGroup):
     waiting_filter_pages = State()
 
 
+# ----- Вспомогательная функция для показа главного меню админа -----
+async def admin_main_menu(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    logger.info(f"Admin {user_id} opened admin main menu")
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(Account))
+        accounts = result.scalars().all()
+
+    # Кнопки действий
+    action_buttons = [
+        [InlineKeyboardButton(text="➕ Добавить аккаунт", callback_data="admin_add_account")],
+        [InlineKeyboardButton(text="📊 Общая статистика", callback_data="admin_global_stats")],
+        [InlineKeyboardButton(text="🔄 Обновить список", callback_data="admin_refresh_list")],
+    ]
+
+    # Кнопки аккаунтов
+    account_buttons = []
+    for acc in accounts:
+        account_buttons.append([InlineKeyboardButton(
+            text=f"{acc.username} (ID: {acc.id})",
+            callback_data=f"admin_acc_{acc.id}"
+        )])
+
+    if not account_buttons:
+        account_buttons.append([InlineKeyboardButton(text="📭 Нет аккаунтов", callback_data="admin_noop")])
+
+    # Кнопка закрытия
+    close_button = [[InlineKeyboardButton(text="❌ Закрыть", callback_data="admin_close")]]
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=action_buttons + account_buttons + close_button)
+    await message.answer("👑 Админ-панель\nВыберите действие или аккаунт:", reply_markup=keyboard)
+    await state.set_state(EditAccountStates.choosing_account)
+
+
+# ----- Вход в админ-панель -----
+@router.message(Command("admin"), is_admin)
+async def admin_panel(message: types.Message, state: FSMContext):
+    logger.info(f"Admin {message.from_user.id} used /admin")
+    await state.clear()
+    await admin_main_menu(message, state)
+
+
+# ----- Добавление аккаунта (из меню) -----
+@router.callback_query(F.data == "admin_add_account")
+async def admin_add_account_callback(callback: CallbackQuery, state: FSMContext):
+    logger.info(f"Admin {callback.from_user.id} clicked add account")
+    await callback.message.edit_text("Введите telegram ID пользователя (целое число):")
+    await state.set_state(AddAccountStates.waiting_telegram_id)
+    await callback.answer()
+
+
+# ----- Общая статистика -----
+@router.callback_query(F.data == "admin_global_stats")
+async def admin_global_stats(callback: CallbackQuery, state: FSMContext):
+    logger.info(f"Admin {callback.from_user.id} requested global stats")
+    async with AsyncSessionLocal() as session:
+        total_accounts = await session.scalar(select(func.count(Account.id)))
+        total_responses = await session.scalar(select(func.count(Response.id)))
+        total_invitations = await session.scalar(select(func.count(Invitation.id)))
+        today = date.today()
+        active_today = await session.scalar(
+            select(func.count(Account.id)).where(Account.last_reset_date == today)
+        )
+
+    text = (
+        f"📊 <b>Общая статистика</b>\n\n"
+        f"👥 Всего аккаунтов: {total_accounts}\n"
+        f"📦 Всего откликов: {total_responses}\n"
+        f"📬 Всего приглашений: {total_invitations}\n"
+        f"📅 Активных сегодня: {active_today}"
+    )
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад в админку", callback_data="admin_back_to_main")]
+    ]))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_back_to_main")
+async def back_to_main_menu(callback: CallbackQuery, state: FSMContext):
+    logger.info(f"Admin {callback.from_user.id} returned to main menu")
+    await admin_main_menu(callback.message, state)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_refresh_list")
+async def refresh_list(callback: CallbackQuery, state: FSMContext):
+    logger.info(f"Admin {callback.from_user.id} refreshed list")
+    await admin_main_menu(callback.message, state)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_noop")
+async def noop(callback: CallbackQuery):
+    await callback.answer()
+
+
+# ----- Команда /add_account (старая, оставлена для совместимости) -----
 @router.message(Command("add_account"), is_admin)
 async def add_account_start(message: types.Message, state: FSMContext):
+    logger.info(f"Admin {message.from_user.id} started add_account")
     await message.answer("Введите telegram ID пользователя (целое число):")
     await state.set_state(AddAccountStates.waiting_telegram_id)
 
@@ -56,12 +158,14 @@ async def add_account_telegram_id(message: types.Message, state: FSMContext):
     try:
         telegram_id = int(message.text)
     except ValueError:
+        logger.warning(f"Admin {message.from_user.id} entered invalid telegram_id: {message.text}")
         await message.answer("❌ Введите целое число.")
         return
 
     async with AsyncSessionLocal() as session:
         existing = await session.get(Account, telegram_id)
         if existing:
+            logger.warning(f"Admin {message.from_user.id} tried to add existing account {telegram_id}")
             await message.answer("❌ Аккаунт с таким telegram ID уже существует.")
             return
         await state.update_data(account_id=telegram_id)
@@ -118,7 +222,6 @@ async def add_account_filter_pages(message: types.Message, state: FSMContext):
         return
 
     data = await state.get_data()
-    # Создаём аккаунт
     async with AsyncSessionLocal() as session:
         account = Account(
             id=data['account_id'],
@@ -130,48 +233,24 @@ async def add_account_filter_pages(message: types.Message, state: FSMContext):
         )
         session.add(account)
         await session.commit()
+        logger.info(f"Admin {message.from_user.id} created account for user {data['account_id']}")
 
     await message.answer("✅ Аккаунт успешно создан!")
     await state.clear()
+    # Возвращаем в главное меню админа
+    await admin_main_menu(message, state)
 
 
-# Команда /admin для входа в админ-панель
-@router.message(Command("admin"), is_admin)
-async def admin_panel(message: types.Message, state: FSMContext):
-    await state.clear()
-    await show_accounts_list(message, state)
-
-
-async def show_accounts_list(message: types.Message, state: FSMContext):
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(select(Account))
-        accounts = result.scalars().all()
-
-    if not accounts:
-        await message.answer("Нет ни одного аккаунта.")
-        return
-
-    buttons = []
-    for acc in accounts:
-        buttons.append([InlineKeyboardButton(
-            text=f"{acc.username} (ID: {acc.id})",
-            callback_data=f"admin_acc_{acc.id}"
-        )])
-    buttons.append([InlineKeyboardButton(text="❌ Закрыть", callback_data="admin_close")])
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await message.answer("Выберите аккаунт для редактирования:", reply_markup=keyboard)
-    await state.set_state(EditAccountStates.choosing_account)
-
-
-# Обработчик выбора аккаунта
+# ----- Выбор аккаунта из списка -----
 @router.callback_query(StateFilter(EditAccountStates.choosing_account), F.data.startswith("admin_acc_"))
 async def account_selected(callback: CallbackQuery, state: FSMContext):
     account_id = int(callback.data.split("_")[2])
+    logger.info(f"Admin {callback.from_user.id} selected account {account_id}")
     await state.update_data(account_id=account_id)
 
     async with AsyncSessionLocal() as session:
         account = await session.get(Account, account_id)
+        logger.info(f"Loaded account {account_id}: filter={account.search_filter}")
 
     buttons = [
         [InlineKeyboardButton(text="🧪 Тестовый режим", callback_data="admin_test_mode")],
@@ -182,7 +261,7 @@ async def account_selected(callback: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="⚙️ Лимит (диапазон)", callback_data="admin_edit_limit_range")],
         [InlineKeyboardButton(text="⏱ Интервал отклика", callback_data="admin_edit_interval")],
         [InlineKeyboardButton(text="🕒 Рабочие часы", callback_data="admin_edit_work_hours")],
-        [InlineKeyboardButton(text="◀️ Назад к списку", callback_data="admin_back_to_list")],
+        [InlineKeyboardButton(text="◀️ Назад к списку", callback_data="admin_back_to_main")],
         [InlineKeyboardButton(text="❌ Закрыть", callback_data="admin_close")],
     ]
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -199,9 +278,10 @@ async def account_selected(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-# ---------- Тестовый режим ----------
+# ----- Тестовый режим для выбранного аккаунта -----
 @router.callback_query(StateFilter(EditAccountStates.choosing_action), F.data == "admin_test_mode")
 async def test_mode_menu(callback: CallbackQuery, state: FSMContext):
+    logger.info(f"Admin {callback.from_user.id} opened test mode for account")
     data = await state.get_data()
     account_id = data["account_id"]
     async with AsyncSessionLocal() as session:
@@ -247,8 +327,8 @@ async def test_toggle(callback: CallbackQuery, state: FSMContext):
         elif field == "send":
             account.test_send_response = not account.test_send_response
         await session.commit()
+        logger.info(f"Admin {callback.from_user.id} toggled test flag {field} for account {account_id}")
 
-    # Обновляем меню
     await test_mode_menu(callback, state)
     await callback.answer()
 
@@ -273,14 +353,12 @@ async def test_count_received(message: types.Message, state: FSMContext):
         account = await session.get(Account, account_id)
         account.test_count = count
         await session.commit()
+        logger.info(f"Admin {message.from_user.id} set test count to {count} for account {account_id}")
 
     await message.answer("✅ Количество сохранено.")
-    # Возвращаемся в меню тестового режима (показываем новое сообщение)
     await message.delete()
-    # Получаем обновлённый аккаунт
     async with AsyncSessionLocal() as session:
         account = await session.get(Account, account_id)
-    # Показываем меню
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
             text=f"{'✅' if account.test_parse_vacancy else '❌'} Парсить вакансию",
@@ -311,6 +389,7 @@ async def admin_run_test(callback: CallbackQuery, state: FSMContext):
     chat_id = callback.from_user.id
     from app.worker.tasks import run_test_for_account
     run_test_for_account.delay(account_id, chat_id)
+    logger.info(f"Admin {callback.from_user.id} started test for account {account_id}")
     await callback.answer("Тест запущен, результат придёт сюда")
     await callback.message.edit_text("✅ Тест запущен. Ожидайте результат...")
 
@@ -326,14 +405,29 @@ async def back_to_account_menu(callback: CallbackQuery, state: FSMContext):
     await account_selected(callback, state)
 
 
-# ---------- Редактирование фильтра ----------
+# ----- Редактирование фильтра -----
 @router.callback_query(StateFilter(EditAccountStates.choosing_action), F.data == "admin_edit_filter")
 async def edit_filter_start(callback: CallbackQuery, state: FSMContext):
+    logger.info(f"Admin {callback.from_user.id} started editing filter")
     await callback.message.edit_text("Введите новый URL фильтра (например, ссылка на поиск hh.ru):")
     await state.set_state(EditAccountStates.editing_filter)
     await callback.answer()
 
 
+# @router.message(StateFilter(EditAccountStates.editing_filter), F.text)
+# async def edit_filter_save(message: types.Message, state: FSMContext):
+#     new_url = message.text
+#     data = await state.get_data()
+#     account_id = data["account_id"]
+#
+#     async with AsyncSessionLocal() as session:
+#         account = await session.get(Account, account_id)
+#         account.search_filter["url"] = new_url
+#         await session.commit()
+#         logger.info(f"Admin {message.from_user.id} updated filter for account {account_id}")
+#
+#     await message.answer("✅ Фильтр обновлён!")
+#     await admin_main_menu(message, state)
 @router.message(StateFilter(EditAccountStates.editing_filter), F.text)
 async def edit_filter_save(message: types.Message, state: FSMContext):
     new_url = message.text
@@ -342,16 +436,25 @@ async def edit_filter_save(message: types.Message, state: FSMContext):
 
     async with AsyncSessionLocal() as session:
         account = await session.get(Account, account_id)
-        account.search_filter["url"] = new_url
+        # Безопасное обновление словаря
+        current_filter = account.search_filter or {}
+        current_filter["url"] = new_url
+        account.search_filter = current_filter
         await session.commit()
+        logger.info(f"Admin {message.from_user.id} updated filter for account {account_id} to {new_url}")
 
     await message.answer("✅ Фильтр обновлён!")
-    await show_accounts_list(message, state)
+    # Возвращаемся в меню аккаунта, чтобы сразу увидеть изменения
+    # Для этого нужно снова вызвать account_selected с тем же account_id
+    # Создадим искусственный callback
+    from aiogram.types import CallbackQuery
+    # Но проще вызвать admin_main_menu, а затем пользователь сам выберет аккаунт
+    await admin_main_menu(message, state)
 
-
-# ---------- Редактирование резюме ----------
+# ----- Редактирование резюме -----
 @router.callback_query(StateFilter(EditAccountStates.choosing_action), F.data == "admin_edit_resume")
 async def edit_resume_start(callback: CallbackQuery, state: FSMContext):
+    logger.info(f"Admin {callback.from_user.id} started editing resume")
     await callback.message.edit_text("Отправьте новый текст резюме:")
     await state.set_state(EditAccountStates.editing_resume)
     await callback.answer()
@@ -367,14 +470,16 @@ async def edit_resume_save(message: types.Message, state: FSMContext):
         account = await session.get(Account, account_id)
         account.resume_text = new_resume
         await session.commit()
+        logger.info(f"Admin {message.from_user.id} updated resume for account {account_id}")
 
     await message.answer("✅ Резюме обновлено!")
-    await show_accounts_list(message, state)
+    await admin_main_menu(message, state)
 
 
-# ---------- Редактирование прокси ----------
+# ----- Редактирование прокси -----
 @router.callback_query(StateFilter(EditAccountStates.choosing_action), F.data == "admin_edit_proxy")
 async def edit_proxy_start(callback: CallbackQuery, state: FSMContext):
+    logger.info(f"Admin {callback.from_user.id} started editing proxy")
     await callback.message.edit_text(
         "Введите новый прокси (например, http://user:pass@host:port) или '-' для удаления:")
     await state.set_state(EditAccountStates.editing_proxy)
@@ -392,15 +497,19 @@ async def edit_proxy_save(message: types.Message, state: FSMContext):
     async with AsyncSessionLocal() as session:
         account = await session.get(Account, account_id)
         account.proxy = new_proxy
+        # Сбрасываем cookies при смене прокси
+        account.cookies = {}
         await session.commit()
+        logger.info(f"Admin {message.from_user.id} updated proxy for account {account_id}")
 
     await message.answer("✅ Прокси обновлён!")
-    await show_accounts_list(message, state)
+    await admin_main_menu(message, state)
 
 
-# ---------- Редактирование лимита (текущего) ----------
+# ----- Редактирование текущего лимита -----
 @router.callback_query(StateFilter(EditAccountStates.choosing_action), F.data == "admin_edit_limit")
 async def edit_limit_start(callback: CallbackQuery, state: FSMContext):
+    logger.info(f"Admin {callback.from_user.id} started editing daily limit")
     await callback.message.edit_text("Введите новый дневной лимит откликов (целое число):")
     await state.set_state(EditAccountStates.editing_limit)
     await callback.answer()
@@ -421,14 +530,16 @@ async def edit_limit_save(message: types.Message, state: FSMContext):
         account = await session.get(Account, account_id)
         account.daily_response_limit = new_limit
         await session.commit()
+        logger.info(f"Admin {message.from_user.id} set daily limit to {new_limit} for account {account_id}")
 
     await message.answer("✅ Лимит обновлён!")
-    await show_accounts_list(message, state)
+    await admin_main_menu(message, state)
 
 
-# ---------- Редактирование диапазона лимита ----------
+# ----- Редактирование диапазона лимита -----
 @router.callback_query(StateFilter(EditAccountStates.choosing_action), F.data == "admin_edit_limit_range")
 async def edit_limit_range_start(callback: CallbackQuery, state: FSMContext):
+    logger.info(f"Admin {callback.from_user.id} started editing limit range")
     await callback.message.edit_text("Введите минимальный и максимальный лимит через пробел (например: 50 100):")
     await state.set_state(EditAccountStates.editing_limit_range)
     await callback.answer()
@@ -457,14 +568,16 @@ async def edit_limit_range_save(message: types.Message, state: FSMContext):
         account.daily_limit_min = min_lim
         account.daily_limit_max = max_lim
         await session.commit()
+        logger.info(f"Admin {message.from_user.id} updated limit range for account {account_id}")
 
     await message.answer("✅ Диапазон лимита обновлён!")
-    await show_accounts_list(message, state)
+    await admin_main_menu(message, state)
 
 
-# ---------- Редактирование интервала между откликами ----------
+# ----- Редактирование интервала отклика -----
 @router.callback_query(StateFilter(EditAccountStates.choosing_action), F.data == "admin_edit_interval")
 async def edit_interval_start(callback: CallbackQuery, state: FSMContext):
+    logger.info(f"Admin {callback.from_user.id} started editing interval")
     await callback.message.edit_text(
         "Введите минимальный и максимальный интервал между откликами в секундах через пробел (например: 120 480):")
     await state.set_state(EditAccountStates.editing_interval_range)
@@ -494,14 +607,16 @@ async def edit_interval_save(message: types.Message, state: FSMContext):
         account.response_interval_min = min_int
         account.response_interval_max = max_int
         await session.commit()
+        logger.info(f"Admin {message.from_user.id} updated interval range for account {account_id}")
 
     await message.answer("✅ Интервал откликов обновлён!")
-    await show_accounts_list(message, state)
+    await admin_main_menu(message, state)
 
 
-# ---------- Редактирование рабочих часов ----------
+# ----- Редактирование рабочих часов -----
 @router.callback_query(StateFilter(EditAccountStates.choosing_action), F.data == "admin_edit_work_hours")
 async def edit_work_hours_start(callback: CallbackQuery, state: FSMContext):
+    logger.info(f"Admin {callback.from_user.id} started editing work hours")
     await callback.message.edit_text(
         "Введите часы начала и окончания работы через пробел (например: 10 17):")
     await state.set_state(EditAccountStates.editing_work_hours)
@@ -531,21 +646,22 @@ async def edit_work_hours_save(message: types.Message, state: FSMContext):
         account.work_start_hour = start
         account.work_end_hour = end
         await session.commit()
+        logger.info(f"Admin {message.from_user.id} updated work hours for account {account_id}")
 
     await message.answer("✅ Рабочие часы обновлены!")
-    await show_accounts_list(message, state)
+    await admin_main_menu(message, state)
 
 
-# ---------- Назад к списку аккаунтов ----------
-@router.callback_query(StateFilter(EditAccountStates.choosing_action), F.data == "admin_back_to_list")
-async def back_to_list(callback: CallbackQuery, state: FSMContext):
-    await show_accounts_list(callback.message, state)
-    await callback.answer()
-
-
-# ---------- Закрыть админку ----------
+# ----- Закрыть админку -----
 @router.callback_query(F.data == "admin_close")
 async def close_admin(callback: CallbackQuery, state: FSMContext):
+    logger.info(f"Admin {callback.from_user.id} closed admin panel")
     await callback.message.delete()
     await state.clear()
     await callback.answer("Админ-панель закрыта")
+
+
+# ----- Обработчик ошибок для админ-хэндлеров -----
+@router.errors()
+async def admin_errors_handler(event: types.ErrorEvent):
+    logger.exception(f"Admin handler error: {event.exception}")

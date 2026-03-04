@@ -1,17 +1,15 @@
-version: '3.8'
-
 networks:
   job_bot_network:
     driver: bridge
 
 services:
   postgres:
-    image: postgres:15
+    image: postgres:17-alpine
     container_name: job_bot_postgres
     environment:
       POSTGRES_DB: job_bot
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: 1tsh3llg00dp4ssw0rd
+      POSTGRES_PASSWORD: postgres
     volumes:
       - pg_data:/var/lib/postgresql/data
     ports:
@@ -87,6 +85,7 @@ services:
       ollama:
         condition: service_started
     volumes:
+      - ./app:/app/app                # Монтируем код для разработки
       - ./logs:/app/logs
       - ./data:/app/data
     networks:
@@ -96,7 +95,7 @@ services:
   worker:
     build: .
     container_name: job_bot_worker
-    command: celery -A app.worker.celery_app worker --loglevel=info
+    command: celery -A app.worker.celery_app:celery_app worker --loglevel=info
     env_file:
       - .env
     depends_on:
@@ -107,6 +106,7 @@ services:
       ollama:
         condition: service_started
     volumes:
+      - ./app:/app/app                # Монтируем код для разработки
       - ./logs:/app/logs
       - ./data:/app/data
     networks:
@@ -116,13 +116,14 @@ services:
   beat:
     build: .
     container_name: job_bot_beat
-    command: celery -A app.worker.celery_app beat --loglevel=info
+    command: celery -A app.worker.celery_app:celery_app beat --loglevel=info
     env_file:
       - .env
     depends_on:
       redis:
         condition: service_healthy
     volumes:
+      - ./app:/app/app                # Монтируем код для разработки
       - ./logs:/app/logs
     networks:
       - job_bot_network
