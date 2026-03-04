@@ -1,3 +1,4 @@
+# app/handlers/admin.py
 from aiogram import types, F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -29,10 +30,9 @@ class EditAccountStates(StatesGroup):
     editing_resume = State()
     editing_proxy = State()
     editing_limit = State()
-
     editing_limit_range = State()
-    editing_interval_range = State()
-    editing_work_hours = State()
+    editing_interval_range = State()      # добавлено
+    editing_work_hours = State()          # добавлено
 
 
 class AddAccountStates(StatesGroup):
@@ -43,7 +43,6 @@ class AddAccountStates(StatesGroup):
     waiting_proxy = State()
     waiting_filter_url = State()
     waiting_filter_pages = State()
-    # Остальные поля оставим по умолчанию
 
 
 @router.message(Command("add_account"), is_admin)
@@ -128,49 +127,12 @@ async def add_account_filter_pages(message: types.Message, state: FSMContext):
             resume_id=data['resume_id'],
             proxy=data.get('proxy'),
             search_filter={"url": data['filter_url'], "max_pages": pages},
-            # Остальные поля по умолчанию
         )
         session.add(account)
         await session.commit()
 
     await message.answer("✅ Аккаунт успешно создан!")
     await state.clear()
-
-
-@router.callback_query(StateFilter(EditAccountStates.choosing_action), F.data == "admin_edit_limit_range")
-async def edit_limit_range_start(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("Введите минимальный и максимальный лимит через пробел (например: 50 100):")
-    await state.set_state(EditAccountStates.editing_limit_range)
-    await callback.answer()
-
-
-@router.message(StateFilter(EditAccountStates.editing_limit_range), F.text)
-async def edit_limit_range_save(message: types.Message, state: FSMContext):
-    parts = message.text.strip().split()
-    if len(parts) != 2:
-        await message.answer("❌ Нужно два числа через пробел.")
-        return
-    try:
-        min_lim, max_lim = map(int, parts)
-    except ValueError:
-        await message.answer("❌ Введите целые числа.")
-        return
-    if min_lim > max_lim or min_lim <= 0:
-        await message.answer("❌ Некорректный диапазон.")
-        return
-
-    data = await state.get_data()
-    account_id = data["account_id"]
-
-    async with AsyncSessionLocal() as session:
-        account = await session.get(Account, account_id)
-        account.daily_limit_min = min_lim
-        account.daily_limit_max = max_lim
-        # Сразу пересчитывать лимит на сегодня не будем, он обновится при следующем сбросе
-        await session.commit()
-
-    await message.answer("✅ Диапазон лимита обновлён!")
-    await show_accounts_list(message, state)
 
 
 # Команда /admin для входа в админ-панель
@@ -189,7 +151,6 @@ async def show_accounts_list(message: types.Message, state: FSMContext):
         await message.answer("Нет ни одного аккаунта.")
         return
 
-    # Создаём инлайн-клавиатуру со списком аккаунтов
     buttons = []
     for acc in accounts:
         buttons.append([InlineKeyboardButton(
@@ -209,11 +170,9 @@ async def account_selected(callback: CallbackQuery, state: FSMContext):
     account_id = int(callback.data.split("_")[2])
     await state.update_data(account_id=account_id)
 
-    # Получаем данные аккаунта
     async with AsyncSessionLocal() as session:
         account = await session.get(Account, account_id)
 
-    # Кнопки действий
     buttons = [
         [InlineKeyboardButton(text="🧪 Тестовый режим", callback_data="admin_test_mode")],
         [InlineKeyboardButton(text="✏️ Изменить фильтр", callback_data="admin_edit_filter")],
@@ -240,6 +199,7 @@ async def account_selected(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+# ---------- Тестовый режим ----------
 @router.callback_query(StateFilter(EditAccountStates.choosing_action), F.data == "admin_test_mode")
 async def test_mode_menu(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
@@ -247,29 +207,28 @@ async def test_mode_menu(callback: CallbackQuery, state: FSMContext):
     async with AsyncSessionLocal() as session:
         account = await session.get(Account, account_id)
 
-    # Строим клавиатуру с флагами
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
             text=f"{'✅' if account.test_parse_vacancy else '❌'} Парсить вакансию",
-            callback_data=f"test_toggle_parse"
+            callback_data="test_toggle_parse"
         )],
         [InlineKeyboardButton(
             text=f"{'✅' if account.test_generate_letter else '❌'} Генерировать письмо",
-            callback_data=f"test_toggle_generate"
+            callback_data="test_toggle_generate"
         )],
         [InlineKeyboardButton(
             text=f"{'✅' if account.test_send_response else '❌'} Отправлять отклик",
-            callback_data=f"test_toggle_send"
+            callback_data="test_toggle_send"
         )],
         [InlineKeyboardButton(
             text=f"🔢 Количество: {account.test_count}",
-            callback_data=f"test_set_count"
+            callback_data="test_set_count"
         )],
         [InlineKeyboardButton(text="🚀 Запустить тест", callback_data="test_run")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back_to_account")],
     ])
     await callback.message.edit_text("Настройки тестового режима:", reply_markup=kb)
-    await state.set_state("test_mode")  # можно использовать отдельное состояние, но проще хранить флаг
+    await state.set_state("test_mode")
     await callback.answer()
 
 
@@ -314,32 +273,60 @@ async def test_count_received(message: types.Message, state: FSMContext):
         account = await session.get(Account, account_id)
         account.test_count = count
         await session.commit()
+
     await message.answer("✅ Количество сохранено.")
-    # Вернуться в меню тестового режима
-    await test_mode_menu(message, state)  # но message не callback, надо создать новое сообщение
-    # Проще: отправить новое сообщение с меню, а старое удалить.
+    # Возвращаемся в меню тестового режима (показываем новое сообщение)
     await message.delete()
-    # Создадим callback-запрос искусственно? Лучше вызвать функцию, которая создаст новое сообщение.
-    # Упростим: просто покажем меню в новом сообщении.
-    await show_test_menu(message.from_user.id, account_id, state)
+    # Получаем обновлённый аккаунт
+    async with AsyncSessionLocal() as session:
+        account = await session.get(Account, account_id)
+    # Показываем меню
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"{'✅' if account.test_parse_vacancy else '❌'} Парсить вакансию",
+            callback_data="test_toggle_parse"
+        )],
+        [InlineKeyboardButton(
+            text=f"{'✅' if account.test_generate_letter else '❌'} Генерировать письмо",
+            callback_data="test_toggle_generate"
+        )],
+        [InlineKeyboardButton(
+            text=f"{'✅' if account.test_send_response else '❌'} Отправлять отклик",
+            callback_data="test_toggle_send"
+        )],
+        [InlineKeyboardButton(
+            text=f"🔢 Количество: {account.test_count}",
+            callback_data="test_set_count"
+        )],
+        [InlineKeyboardButton(text="🚀 Запустить тест", callback_data="test_run")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back_to_account")],
+    ])
+    await message.answer("Настройки тестового режима:", reply_markup=kb)
 
 
-# Кнопка "Назад к списку"
-@router.callback_query(StateFilter(EditAccountStates.choosing_action), F.data == "admin_back_to_list")
-async def back_to_list(callback: CallbackQuery, state: FSMContext):
-    await show_accounts_list(callback.message, state)
-    await callback.answer()
+@router.callback_query(F.data == "test_run")
+async def admin_run_test(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    account_id = data["account_id"]
+    chat_id = callback.from_user.id
+    from app.worker.tasks import run_test_for_account
+    run_test_for_account.delay(account_id, chat_id)
+    await callback.answer("Тест запущен, результат придёт сюда")
+    await callback.message.edit_text("✅ Тест запущен. Ожидайте результат...")
 
 
-# Закрыть админку
-@router.callback_query(F.data == "admin_close")
-async def close_admin(callback: CallbackQuery, state: FSMContext):
-    await callback.message.delete()
-    await state.clear()
-    await callback.answer("Админ-панель закрыта")
+@router.callback_query(F.data == "admin_back_to_account")
+async def back_to_account_menu(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    account_id = data.get("account_id")
+    if not account_id:
+        await callback.answer("Ошибка: не выбран аккаунт", show_alert=True)
+        return
+    callback.data = f"admin_acc_{account_id}"
+    await account_selected(callback, state)
 
 
-# --- Редактирование фильтра ---
+# ---------- Редактирование фильтра ----------
 @router.callback_query(StateFilter(EditAccountStates.choosing_action), F.data == "admin_edit_filter")
 async def edit_filter_start(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("Введите новый URL фильтра (например, ссылка на поиск hh.ru):")
@@ -359,10 +346,10 @@ async def edit_filter_save(message: types.Message, state: FSMContext):
         await session.commit()
 
     await message.answer("✅ Фильтр обновлён!")
-    await show_accounts_list(message, state)  # возвращаем к списку
+    await show_accounts_list(message, state)
 
 
-# --- Редактирование резюме ---
+# ---------- Редактирование резюме ----------
 @router.callback_query(StateFilter(EditAccountStates.choosing_action), F.data == "admin_edit_resume")
 async def edit_resume_start(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("Отправьте новый текст резюме:")
@@ -385,7 +372,7 @@ async def edit_resume_save(message: types.Message, state: FSMContext):
     await show_accounts_list(message, state)
 
 
-# --- Редактирование прокси ---
+# ---------- Редактирование прокси ----------
 @router.callback_query(StateFilter(EditAccountStates.choosing_action), F.data == "admin_edit_proxy")
 async def edit_proxy_start(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
@@ -411,7 +398,7 @@ async def edit_proxy_save(message: types.Message, state: FSMContext):
     await show_accounts_list(message, state)
 
 
-# --- Редактирование лимита ---
+# ---------- Редактирование лимита (текущего) ----------
 @router.callback_query(StateFilter(EditAccountStates.choosing_action), F.data == "admin_edit_limit")
 async def edit_limit_start(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("Введите новый дневной лимит откликов (целое число):")
@@ -437,3 +424,128 @@ async def edit_limit_save(message: types.Message, state: FSMContext):
 
     await message.answer("✅ Лимит обновлён!")
     await show_accounts_list(message, state)
+
+
+# ---------- Редактирование диапазона лимита ----------
+@router.callback_query(StateFilter(EditAccountStates.choosing_action), F.data == "admin_edit_limit_range")
+async def edit_limit_range_start(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("Введите минимальный и максимальный лимит через пробел (например: 50 100):")
+    await state.set_state(EditAccountStates.editing_limit_range)
+    await callback.answer()
+
+
+@router.message(StateFilter(EditAccountStates.editing_limit_range), F.text)
+async def edit_limit_range_save(message: types.Message, state: FSMContext):
+    parts = message.text.strip().split()
+    if len(parts) != 2:
+        await message.answer("❌ Нужно два числа через пробел.")
+        return
+    try:
+        min_lim, max_lim = map(int, parts)
+    except ValueError:
+        await message.answer("❌ Введите целые числа.")
+        return
+    if min_lim > max_lim or min_lim <= 0:
+        await message.answer("❌ Некорректный диапазон.")
+        return
+
+    data = await state.get_data()
+    account_id = data["account_id"]
+
+    async with AsyncSessionLocal() as session:
+        account = await session.get(Account, account_id)
+        account.daily_limit_min = min_lim
+        account.daily_limit_max = max_lim
+        await session.commit()
+
+    await message.answer("✅ Диапазон лимита обновлён!")
+    await show_accounts_list(message, state)
+
+
+# ---------- Редактирование интервала между откликами ----------
+@router.callback_query(StateFilter(EditAccountStates.choosing_action), F.data == "admin_edit_interval")
+async def edit_interval_start(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text(
+        "Введите минимальный и максимальный интервал между откликами в секундах через пробел (например: 120 480):")
+    await state.set_state(EditAccountStates.editing_interval_range)
+    await callback.answer()
+
+
+@router.message(StateFilter(EditAccountStates.editing_interval_range), F.text)
+async def edit_interval_save(message: types.Message, state: FSMContext):
+    parts = message.text.strip().split()
+    if len(parts) != 2:
+        await message.answer("❌ Нужно два числа через пробел.")
+        return
+    try:
+        min_int, max_int = map(int, parts)
+    except ValueError:
+        await message.answer("❌ Введите целые числа.")
+        return
+    if min_int > max_int or min_int <= 0:
+        await message.answer("❌ Некорректный диапазон.")
+        return
+
+    data = await state.get_data()
+    account_id = data["account_id"]
+
+    async with AsyncSessionLocal() as session:
+        account = await session.get(Account, account_id)
+        account.response_interval_min = min_int
+        account.response_interval_max = max_int
+        await session.commit()
+
+    await message.answer("✅ Интервал откликов обновлён!")
+    await show_accounts_list(message, state)
+
+
+# ---------- Редактирование рабочих часов ----------
+@router.callback_query(StateFilter(EditAccountStates.choosing_action), F.data == "admin_edit_work_hours")
+async def edit_work_hours_start(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text(
+        "Введите часы начала и окончания работы через пробел (например: 10 17):")
+    await state.set_state(EditAccountStates.editing_work_hours)
+    await callback.answer()
+
+
+@router.message(StateFilter(EditAccountStates.editing_work_hours), F.text)
+async def edit_work_hours_save(message: types.Message, state: FSMContext):
+    parts = message.text.strip().split()
+    if len(parts) != 2:
+        await message.answer("❌ Нужно два числа через пробел.")
+        return
+    try:
+        start, end = map(int, parts)
+    except ValueError:
+        await message.answer("❌ Введите целые числа.")
+        return
+    if not (0 <= start < 24) or not (0 <= end <= 24) or start >= end:
+        await message.answer("❌ Некорректные часы (должны быть 0-23, начало < конец).")
+        return
+
+    data = await state.get_data()
+    account_id = data["account_id"]
+
+    async with AsyncSessionLocal() as session:
+        account = await session.get(Account, account_id)
+        account.work_start_hour = start
+        account.work_end_hour = end
+        await session.commit()
+
+    await message.answer("✅ Рабочие часы обновлены!")
+    await show_accounts_list(message, state)
+
+
+# ---------- Назад к списку аккаунтов ----------
+@router.callback_query(StateFilter(EditAccountStates.choosing_action), F.data == "admin_back_to_list")
+async def back_to_list(callback: CallbackQuery, state: FSMContext):
+    await show_accounts_list(callback.message, state)
+    await callback.answer()
+
+
+# ---------- Закрыть админку ----------
+@router.callback_query(F.data == "admin_close")
+async def close_admin(callback: CallbackQuery, state: FSMContext):
+    await callback.message.delete()
+    await state.clear()
+    await callback.answer("Админ-панель закрыта")

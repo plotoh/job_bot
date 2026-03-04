@@ -1,11 +1,12 @@
+# app/worker/tasks.py
 import asyncio
 import logging
 import random
 from datetime import date, datetime
 from typing import List, Dict, Optional
-import pytz  # обязательно установите pytz
-import aiohttp
 
+import aiohttp
+import pytz
 from sqlalchemy import select, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -130,6 +131,7 @@ async def _extract_secret_word_llm(description: str) -> Optional[str]:
 
 
 # ---------- Генерация и отправка откликов для всех аккаунтов ----------
+
 @celery_app.task
 def generate_and_send_responses():
     """Для каждого аккаунта выбирает случайные вакансии, генерирует письма и отправляет (с учётом лимитов)."""
@@ -145,38 +147,31 @@ def is_working_hours(account: Account) -> bool:
 
 async def _generate_and_send_responses():
     async with AsyncSessionLocal() as session:
-        # Получаем всех активных аккаунтов
-        result = await session.execute(select(Account).where(Account.is_active == True))
-        accounts = result.scalars().all()
+        accounts = await session.execute(select(Account).where(Account.is_active == True))
+        accounts = accounts.scalars().all()
 
         for account in accounts:
-            # Проверка рабочего времени
             if not is_working_hours(account):
-                logger.info(f"Account {account.id} skipped: outside working hours")
                 continue
-            # Сброс лимита, если начался новый день
             await _reset_daily_limit_if_needed(account, session)
 
-            # Сколько ещё можно откликнуться сегодня
             remaining = account.daily_response_limit - account.responses_today
             if remaining <= 0:
-                logger.info(
-                    f"Account {account.id} has reached daily limit ({account.responses_today}/{account.daily_response_limit})")
                 continue
 
-            # Выбираем случайные вакансии, на которые этот аккаунт ещё не смотрел (нет записи в AccountVacancy)
-            # Используем подзапрос, чтобы исключить уже просмотренные
-            subq = select(AccountVacancy.vacancy_id).where(AccountVacancy.account_id == account.id)
-            stmt = select(Vacancy).where(Vacancy.id.not_in(subq)).order_by(func.random()).limit(remaining)
+            # Выбираем вакансии, на которые ещё не откликались
+            subq_all = select(AccountVacancy.vacancy_id).where(AccountVacancy.account_id == account.id)
+            stmt = select(Vacancy).where(Vacancy.id.not_in(subq_all)).order_by(func.random()).limit(remaining)
             vacancies = await session.execute(stmt)
             vacancies = vacancies.scalars().all()
-
             if not vacancies:
-                logger.info(f"No new vacancies for account {account.id}")
                 continue
 
-            # Для каждой выбранной вакансии создаём запись AccountVacancy (просмотр)
+            auth_failed = False
             for vacancy in vacancies:
+                if auth_failed:
+                    break  # после ошибки авторизации не пытаемся отправить другие вакансии
+
                 # Создаём запись о просмотре
                 account_vacancy = AccountVacancy(
                     account_id=account.id,
@@ -185,20 +180,21 @@ async def _generate_and_send_responses():
                     responded=False
                 )
                 session.add(account_vacancy)
-                await session.commit()  # коммитим сразу, чтобы зафиксировать просмотр
+                await session.commit()
 
-                # Генерируем сопроводительное письмо
+                # Генерируем письмо
                 try:
                     letter = await generate_cover_letter(
                         vacancy_title=vacancy.title,
                         vacancy_description=vacancy.description,
-                        company="Компания",  # можно достать из вакансии, но для простоты так
+                        company="Компания",
                         resume_text=account.resume_text,
                         secret_word=vacancy.check_word
                     )
                 except Exception as e:
                     logger.error(f"Failed to generate letter for vacancy {vacancy.id}: {e}")
-                    # Продолжаем со следующей вакансией (оставляем запись просмотра, но без отклика)
+                    await session.delete(account_vacancy)
+                    await session.commit()
                     continue
 
                 # Сохраняем отклик
@@ -212,35 +208,157 @@ async def _generate_and_send_responses():
                 await session.commit()
                 await session.refresh(response)
 
-                # Обновляем запись AccountVacancy: отмечаем, что отклик создан, и связываем с response
                 account_vacancy.responded = True
                 account_vacancy.response_id = response.id
                 await session.commit()
 
-                # Увеличиваем счётчик откликов за сегодня
                 account.responses_today += 1
                 await session.commit()
 
-                # Отправляем отклик (в фоне, можно тоже через Celery, но для простоты вызовем синхронно в этой же задаче)
-                # Чтобы не блокировать, можно отправить как отдельную задачу, но пока сделаем здесь.
+                # Отправляем отклик
                 try:
-                    await send_response(account.id, vacancy.id, response.id)
-                    response.status = "sent"
-                    response.sent_at = datetime.utcnow()
-
-                    if account.responses_today < account.daily_response_limit:
-                        delay = random.randint(account.response_interval_min, account.response_interval_max)
-                        logger.info(f"Account {account.id}: waiting {delay} seconds before next response")
-                        await asyncio.sleep(delay)  # .sleep работает, т.к. функция асинхронная
-
+                    success = await send_response(account.id, vacancy.id, response.id)
+                    if success:
+                        response.status = "sent"
+                        response.sent_at = datetime.utcnow()
+                        logger.info(f"Response {response.id} sent for account {account.id}")
+                    else:
+                        response.status = "error"
+                        response.error_message = "send_response returned False"
                 except Exception as e:
                     logger.error(f"Failed to send response {response.id}: {e}")
                     response.status = "error"
                     response.error_message = str(e)
+                    # Отправляем уведомление в Telegram
+                    await send_telegram_message(
+                        account.id,
+                        f"⚠️ Ошибка при отправке отклика на вакансию «{vacancy.title}».\n"
+                        f"Причина: {str(e)[:200]}\n"
+                        f"Проверьте настройки аккаунта (логин/пароль) и повторите попытку."
+                    )
+                    auth_failed = True  # прекращаем дальнейшие попытки для этого аккаунта
                 finally:
                     await session.commit()
 
+                # Если лимит не исчерпан и ошибки не было – делаем паузу
+                if not auth_failed and account.responses_today < account.daily_response_limit:
+                    delay = random.randint(account.response_interval_min, account.response_interval_max)
+                    logger.info(f"Account {account.id}: waiting {delay} seconds before next response")
+                    await asyncio.sleep(delay)
+
             logger.info(f"Account {account.id}: generated {account.responses_today} responses today.")
+
+
+# async def _generate_and_send_responses():
+#     async with AsyncSessionLocal() as session:
+#         # Получаем всех активных аккаунтов
+#         result = await session.execute(select(Account).where(Account.is_active == True))
+#         accounts = result.scalars().all()
+#
+#         for account in accounts:
+#             # Проверка рабочего времени
+#             if not is_working_hours(account):
+#                 logger.info(f"Account {account.id} skipped: outside working hours")
+#                 continue
+#             # Сброс лимита, если начался новый день
+#             await _reset_daily_limit_if_needed(account, session)
+#
+#             # Сколько ещё можно откликнуться сегодня
+#             remaining = account.daily_response_limit - account.responses_today
+#             if remaining <= 0:
+#                 logger.info(
+#                     f"Account {account.id} has reached daily limit ({account.responses_today}/{account.daily_response_limit})")
+#                 continue
+#
+#             # Выбираем вакансии, на которые этот аккаунт ещё не откликался (responded=False)
+#             # Но также нужно учесть, что вакансия может быть уже просмотрена, но не отвечена
+#             subq = select(AccountVacancy.vacancy_id).where(
+#                 AccountVacancy.account_id == account.id,
+#                 AccountVacancy.responded == False
+#             )
+#             # Берём вакансии, которых нет в подзапросе (т.е. ещё не просмотрены) – это новые
+#             # Но также можно брать и те, где responded=False, но они уже есть в AccountVacancy – это неотвеченные ранее
+#             # Для простоты возьмём все вакансии, которых нет в AccountVacancy для этого аккаунта
+#             subq_all = select(AccountVacancy.vacancy_id).where(AccountVacancy.account_id == account.id)
+#             stmt = select(Vacancy).where(Vacancy.id.not_in(subq_all)).order_by(func.random()).limit(remaining)
+#             vacancies = await session.execute(stmt)
+#             vacancies = vacancies.scalars().all()
+#
+#             if not vacancies:
+#                 logger.info(f"No new vacancies for account {account.id}")
+#                 continue
+#
+#             for vacancy in vacancies:
+#                 # Создаём запись о просмотре (responded=False)
+#                 account_vacancy = AccountVacancy(
+#                     account_id=account.id,
+#                     vacancy_id=vacancy.id,
+#                     viewed_at=datetime.utcnow(),
+#                     responded=False
+#                 )
+#                 session.add(account_vacancy)
+#                 await session.commit()  # коммитим, чтобы зафиксировать просмотр
+#
+#                 # Генерируем сопроводительное письмо
+#                 try:
+#                     letter = await generate_cover_letter(
+#                         vacancy_title=vacancy.title,
+#                         vacancy_description=vacancy.description,
+#                         company="Компания",  # можно достать из вакансии
+#                         resume_text=account.resume_text,
+#                         secret_word=vacancy.check_word
+#                     )
+#                 except Exception as e:
+#                     logger.error(f"Failed to generate letter for vacancy {vacancy.id}: {e}")
+#                     # Удаляем запись просмотра, чтобы можно было повторить позже
+#                     await session.delete(account_vacancy)
+#                     await session.commit()
+#                     continue
+#
+#                 # Сохраняем отклик
+#                 response = Response(
+#                     account_id=account.id,
+#                     vacancy_id=vacancy.id,
+#                     cover_letter=letter,
+#                     status="pending"
+#                 )
+#                 session.add(response)
+#                 await session.commit()
+#                 await session.refresh(response)
+#
+#                 # Обновляем запись AccountVacancy: отмечаем, что отклик создан
+#                 account_vacancy.responded = True
+#                 account_vacancy.response_id = response.id
+#                 await session.commit()
+#
+#                 # Увеличиваем счётчик откликов за сегодня
+#                 account.responses_today += 1
+#                 await session.commit()
+#
+#                 # Отправляем отклик
+#                 try:
+#                     success = await send_response(account.id, vacancy.id, response.id)
+#                     if success:
+#                         response.status = "sent"
+#                         response.sent_at = datetime.utcnow()
+#                         logger.info(f"Response {response.id} sent for account {account.id}")
+#                     else:
+#                         response.status = "error"
+#                         response.error_message = "send_response returned False"
+#                 except Exception as e:
+#                     logger.error(f"Failed to send response {response.id}: {e}")
+#                     response.status = "error"
+#                     response.error_message = str(e)
+#                 finally:
+#                     await session.commit()
+#
+#                 # Если лимит ещё не исчерпан, делаем паузу перед следующей вакансией
+#                 if account.responses_today < account.daily_response_limit:
+#                     delay = random.randint(account.response_interval_min, account.response_interval_max)
+#                     logger.info(f"Account {account.id}: waiting {delay} seconds before next response")
+#                     await asyncio.sleep(delay)
+#
+#             logger.info(f"Account {account.id}: generated {account.responses_today} responses today.")
 
 
 async def _reset_daily_limit_if_needed(account: Account, session: AsyncSession):
@@ -255,10 +373,10 @@ async def _reset_daily_limit_if_needed(account: Account, session: AsyncSession):
         logger.info(f"Account {account.id} new daily limit: {account.daily_response_limit}")
 
 
-# ---------- Отдельная задача для сброса лимитов (на всякий случай) ----------
+# ---------- Отдельная задача для сброса лимитов ----------
 @celery_app.task
 def reset_daily_limits():
-    """Принудительно сбрасывает лимиты для всех аккаунтов (можно запускать раз в день для надёжности)."""
+    """Принудительно сбрасывает лимиты для всех аккаунтов (запускается раз в день)."""
     run_async(_reset_daily_limits())
 
 
@@ -271,19 +389,20 @@ async def _reset_daily_limits():
     logger.info("Daily limits reset for all accounts.")
 
 
+# ---------- Вспомогательная функция для отправки сообщений в Telegram ----------
 async def send_telegram_message(chat_id: int, text: str):
     url = f"https://api.telegram.org/bot{settings.BOT_TOKEN}/sendMessage"
     async with aiohttp.ClientSession() as session:
         await session.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"})
 
 
+# ---------- Тестовый запуск для аккаунта ----------
 @celery_app.task
 def run_test_for_account(account_id: int, chat_id: int):
     run_async(_run_test_for_account(account_id, chat_id))
 
 
 async def _run_test_for_account(account_id: int, chat_id: int):
-
     async with AsyncSessionLocal() as session:
         account = await session.get(Account, account_id)
         if not account:
@@ -296,11 +415,14 @@ async def _run_test_for_account(account_id: int, chat_id: int):
         test_send = account.test_send_response
         test_count = account.test_count
 
-        # Здесь логика тестирования
-        # Для простоты просто сгенерируем отчёт
-        report_lines = [f"<b>Тестовый запуск для аккаунта {account.username}</b>",
-                        f"Настройки: парсинг={'✅' if test_parse else '❌'}, генерация={'✅' if test_generate else '❌'}, отправка={'✅' if test_send else '❌'}",
-                        f"Количество тестов: {test_count}"]
+        # Формируем отчёт
+        report_lines = [
+            f"<b>Тестовый запуск для аккаунта {account.username}</b>",
+            f"Настройки: парсинг={'✅' if test_parse else '❌'}, "
+            f"генерация={'✅' if test_generate else '❌'}, "
+            f"отправка={'✅' if test_send else '❌'}",
+            f"Количество тестов: {test_count}"
+        ]
 
         # Имитация выполнения
         for i in range(1, test_count + 1):
@@ -316,9 +438,10 @@ async def _run_test_for_account(account_id: int, chat_id: int):
         await send_telegram_message(chat_id, "\n".join(report_lines))
 
 
+# ---------- Парсинг новых вакансий для конкретного аккаунта ----------
 @celery_app.task
 def parse_new_vacancies_for_account(account_id: int):
-    """Парсит новые вакансии для конкретного аккаунта (по его фильтру)"""
+    """Парсит новые вакансии для конкретного аккаунта (по его фильтру)."""
     run_async(_parse_new_vacancies_for_account(account_id))
 
 
@@ -379,4 +502,3 @@ async def _parse_new_vacancies_for_account(account_id: int):
             session.add(new_vac)
             await session.commit()
             logger.info(f"Saved new vacancy {vac_data['id']} for account {account_id}")
-

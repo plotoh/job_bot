@@ -1,12 +1,17 @@
 version: '3.8'
 
+networks:
+  job_bot_network:
+    driver: bridge
+
 services:
   postgres:
     image: postgres:15
+    container_name: job_bot_postgres
     environment:
       POSTGRES_DB: job_bot
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: 1tsh3llg00dp4ssw0rd
     volumes:
       - pg_data:/var/lib/postgresql/data
     ports:
@@ -16,9 +21,13 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - job_bot_network
+    restart: unless-stopped
 
   redis:
     image: redis:7
+    container_name: job_bot_redis
     ports:
       - "6379:6379"
     healthcheck:
@@ -26,18 +35,47 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - job_bot_network
+    restart: unless-stopped
 
   ollama:
     image: ollama/ollama:latest
+    container_name: job_bot_ollama
     ports:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
     command: serve
-    # для загрузки модели можно выполнить дополнительную команду, но проще сделать это вручную или через отдельный сервис
+    networks:
+      - job_bot_network
+    restart: unless-stopped
+
+  ollama-setup:
+    image: ollama/ollama:latest
+    container_name: job_bot_ollama_setup
+    depends_on:
+      ollama:
+        condition: service_started
+    environment:
+      - OLLAMA_HOST=ollama:11434
+    volumes:
+      - ollama_data:/root/.ollama
+    entrypoint: >
+      sh -c "
+      echo 'Waiting for Ollama...' &&
+      sleep 10 &&
+      echo 'Pulling model ${OLLAMA_MODEL:-llama3.1:8b}...' &&
+      ollama pull ${OLLAMA_MODEL:-llama3.1:8b} &&
+      echo 'Model pulled successfully.'
+      "
+    networks:
+      - job_bot_network
+    restart: on-failure
 
   bot:
     build: .
+    container_name: job_bot_bot
     command: python -m app.main
     env_file:
       - .env
@@ -51,30 +89,47 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
+    networks:
+      - job_bot_network
+    restart: unless-stopped
 
   worker:
     build: .
+    container_name: job_bot_worker
     command: celery -A app.worker.celery_app worker --loglevel=info
     env_file:
       - .env
     depends_on:
-      - postgres
-      - redis
-      - ollama
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_started
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
+    networks:
+      - job_bot_network
+    restart: unless-stopped
 
   beat:
     build: .
+    container_name: job_bot_beat
     command: celery -A app.worker.celery_app beat --loglevel=info
     env_file:
       - .env
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     volumes:
       - ./logs:/app/logs
+    networks:
+      - job_bot_network
+    restart: unless-stopped
 
 volumes:
   pg_data:
+    name: job_bot_pg_data
   ollama_data:
+    name: job_bot_ollama_data
