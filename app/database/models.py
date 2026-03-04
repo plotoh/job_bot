@@ -1,9 +1,11 @@
-from sqlalchemy import JSON
+from sqlalchemy import JSON, String, Text, Boolean, DateTime, ForeignKey, Integer, Date, BigInteger
 from sqlalchemy.ext.asyncio import AsyncAttrs, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from sqlalchemy import String, Text, Boolean, DateTime, ForeignKey, Integer, JSON
-from datetime import datetime
+from sqlalchemy import Time  # если нужно хранить время, но для часов достаточно Integer
+
+from datetime import datetime, date
 from app.config import settings
+
 
 engine = create_async_engine(
     f"postgresql+asyncpg://{settings.DB_USER}:{settings.DB_PASSWORD}@{settings.DB_HOST}:{settings.DB_PORT}/{settings.DB_NAME}",
@@ -19,23 +21,41 @@ class Base(AsyncAttrs, DeclarativeBase):
 class Account(Base):
     __tablename__ = 'accounts'
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     username: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     password_encrypted: Mapped[str] = mapped_column(Text)  # зашифрованный пароль
     cookies: Mapped[dict] = mapped_column(JSON, default={})
     resume_id: Mapped[str] = mapped_column(String(50))  # id резюме на hh
-    proxy: Mapped[str] = mapped_column(String(200), nullable=True)  # конкретный прокси для аккаунта или пул
+    proxy: Mapped[str] = mapped_column(String(200), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 
-    # связи
-    vacancies = relationship("Vacancy", back_populates="account")
-    responses = relationship("Response", back_populates="account")
-    invitations = relationship("Invitation", back_populates="account")
+    # Новые поля для лимитов и расписания
+    daily_limit_min: Mapped[int] = mapped_column(Integer, default=50)
+    daily_limit_max: Mapped[int] = mapped_column(Integer, default=100)
+    response_interval_min: Mapped[int] = mapped_column(Integer, default=120)  # секунды
+    response_interval_max: Mapped[int] = mapped_column(Integer, default=480)  # 2-8 минут
+    work_start_hour: Mapped[int] = mapped_column(Integer, default=10)  # час начала (мск)
+    work_end_hour: Mapped[int] = mapped_column(Integer, default=17)  # час окончания (мск)
 
-    search_filter: Mapped[dict] = mapped_column(JSON,
-                                                default={})  # например, {"url": "https://hh.ru/search/vacancy?text=Python&area=1", "max_pages": 1}
+    # Поля для лимитов откликов
+    daily_response_limit: Mapped[int] = mapped_column(Integer, default=50)   # максимум в день
+    responses_today: Mapped[int] = mapped_column(Integer, default=0)         # сколько уже отправлено сегодня
+    last_reset_date: Mapped[date] = mapped_column(Date, default=date.today) # дата последнего сброса
+
+    # Фильтр поиска вакансий (например, URL и макс. страниц)
+    search_filter: Mapped[dict] = mapped_column(JSON, default={})
     resume_text: Mapped[str] = mapped_column(Text, default="")  # текст резюме
+
+    # Связи
+    account_vacancies = relationship("AccountVacancy", back_populates="account", cascade="all, delete-orphan")
+    responses = relationship("Response", back_populates="account", cascade="all, delete-orphan")
+    invitations = relationship("Invitation", back_populates="account", cascade="all, delete-orphan")
+
+    test_parse_vacancy: Mapped[bool] = mapped_column(Boolean, default=True)
+    test_generate_letter: Mapped[bool] = mapped_column(Boolean, default=True)
+    test_send_response: Mapped[bool] = mapped_column(Boolean, default=True)
+    test_count: Mapped[int] = mapped_column(Integer, default=1)
 
 
 class Vacancy(Base):
@@ -47,18 +67,32 @@ class Vacancy(Base):
     url: Mapped[str] = mapped_column(String(500))
     description: Mapped[str] = mapped_column(Text)
     check_word: Mapped[str] = mapped_column(String(200), nullable=True)
-    has_response: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 
-    account = relationship("Account", back_populates="vacancies")
-    responses = relationship("Response", back_populates="vacancy")
+    # Связи
+    account_vacancies = relationship("AccountVacancy", back_populates="vacancy", cascade="all, delete-orphan")
+    responses = relationship("Response", back_populates="vacancy", cascade="all, delete-orphan")
+
+
+class AccountVacancy(Base):
+    """Связь аккаунта с вакансией (просмотр/отклик)"""
+    __tablename__ = 'account_vacancies'
+    account_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('accounts.id'))
+    vacancy_id: Mapped[int] = mapped_column(ForeignKey('vacancies.id'), primary_key=True)
+    viewed_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)   # когда аккаунт увидел вакансию
+    responded: Mapped[bool] = mapped_column(Boolean, default=False)        # был ли отправлен отклик
+    response_id: Mapped[int] = mapped_column(ForeignKey('responses.id'), nullable=True)  # ссылка на отклик, если есть
+
+    account = relationship("Account", back_populates="account_vacancies")
+    vacancy = relationship("Vacancy", back_populates="account_vacancies")
+    response = relationship("Response", foreign_keys=[response_id])
 
 
 class Response(Base):
     __tablename__ = 'responses'
-
+    
     id: Mapped[int] = mapped_column(primary_key=True)
-    account_id: Mapped[int] = mapped_column(ForeignKey('accounts.id'))
+    account_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('accounts.id'))
     vacancy_id: Mapped[int] = mapped_column(ForeignKey('vacancies.id'))
     cover_letter: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), default='pending')  # pending, sent, error
@@ -74,7 +108,9 @@ class Invitation(Base):
     __tablename__ = 'invitations'
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    account_id: Mapped[int] = mapped_column(ForeignKey('accounts.id'))
+
+    account_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('accounts.id'))
+    # vacancy_id: Mapped[int] = mapped_column(ForeignKey('vacancies.id'), primary_key=True)
     vacancy_hh_id: Mapped[str] = mapped_column(String(50))
     company: Mapped[str] = mapped_column(String(200))
     message: Mapped[str] = mapped_column(Text, nullable=True)

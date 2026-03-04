@@ -7,13 +7,16 @@ if not settings.ENCRYPTION_KEY:
 
 # Инициализируем шифр
 try:
-    cipher = Fernet(settings.ENCRYPTION_KEY.encode() if isinstance(settings.ENCRYPTION_KEY, str) else settings.ENCRYPTION_KEY)
+    cipher = Fernet(
+        settings.ENCRYPTION_KEY.encode() if isinstance(settings.ENCRYPTION_KEY, str) else settings.ENCRYPTION_KEY)
 except Exception as e:
     raise ValueError(f"Invalid ENCRYPTION_KEY: {e}")
+
 
 def encrypt_password(password: str) -> str:
     """Шифрует пароль и возвращает строку в base64."""
     return cipher.encrypt(password.encode()).decode()
+
 
 def decrypt_password(encrypted: str) -> str:
     """Дешифрует пароль."""

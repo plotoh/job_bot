@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore')
 
     BOT_TOKEN: str
+    DEBUG: bool = True
 
     DB_HOST: str = 'localhost'
     DB_PORT: int = 5432
@@ -22,7 +23,7 @@ class Settings(BaseSettings):
 
     PROXY_LIST_PATH: str = '/app/data/proxies.txt'  # файл с прокси (один на строку)
     ENCRYPTION_KEY: str = Field(..., env='ENCRYPTION_KEY')  # для шифрования паролей
-
+    ADMIN_ID: int = Field(..., env='ADMIN_ID')  # единственный админ
     LOG_LEVEL: str = 'INFO'
 
     # Периоды задач (в минутах)

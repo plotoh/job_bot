@@ -4,12 +4,13 @@ from typing import Optional
 import ollama
 from app.config import settings
 
+
 async def generate_cover_letter(
-    vacancy_title: str,
-    vacancy_description: str,
-    company: str,
-    resume_text: str,
-    secret_word: Optional[str] = None
+        vacancy_title: str,
+        vacancy_description: str,
+        company: str,
+        resume_text: str,
+        secret_word: Optional[str] = None
 ) -> str:
     """
     Генерирует сопроводительное письмо с помощью локальной Ollama.

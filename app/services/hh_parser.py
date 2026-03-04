@@ -4,12 +4,26 @@ from typing import Optional, Dict, List
 from playwright.async_api import async_playwright
 from app.utils.proxy_rotator import get_proxy_for_account
 from app.config import settings
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 
 class HHParser:
     def __init__(self, account_id: int, proxy: Optional[Dict] = None):
         self.account_id = account_id
         self.proxy = proxy or get_proxy_for_account(account_id)
+
+    # async def search_vacancies(self, search_url: str, max_pages: int = 1) -> List[Dict]:
+    #     vacancies = []
+    #     async with async_playwright() as p:
+    #         # ... запуск браузера
+    #         for page_num in range(max_pages):
+    #             # Добавляем параметр page к URL
+    #             parsed = urlparse(search_url)
+    #             query = parse_qs(parsed.query)
+    #             query['page'] = [str(page_num)]
+    #             new_query = urlencode(query, doseq=True)
+    #             url = urlunparse(parsed._replace(query=new_query))
+    #             await page.goto(url, ...)
 
     async def search_vacancies(self, search_url: str, max_pages: int = 1) -> List[Dict]:
         """

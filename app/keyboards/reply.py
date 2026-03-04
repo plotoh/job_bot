@@ -1,12 +1,14 @@
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
+
 def get_main_keyboard() -> ReplyKeyboardMarkup:
-    """Возвращает основную клавиатуру с reply-кнопками"""
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🔍 Парсинг вакансий по фильтру")],
             [KeyboardButton(text="📝 Парсинг вакансии и генерация сопроводительного")],
-            [KeyboardButton(text="📊 Статистика")]
+            [KeyboardButton(text="📊 Статистика")],
+            [KeyboardButton(text="🧪 Тестовый режим")],
+            [KeyboardButton(text="⚙️ Настройки аккаунта")],
         ],
         resize_keyboard=True,
         input_field_placeholder="Выберите действие..."
