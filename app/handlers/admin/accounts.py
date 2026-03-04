@@ -1,31 +1,35 @@
 import logging
+
 from aiogram import types, F, Router
+from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from sqlalchemy import select
 
 from app.fsm.states import AdminEditStates
-from app.services.account import get_account
 from app.database.models import AsyncSessionLocal, Account
+from app.services.account_data import format_admin_account_text
+from app.config import settings
 
 logger = logging.getLogger(__name__)
-
 router = Router()
 
 
-@router.callback_query(AdminEditStates.choosing_account, F.data.startswith("admin_acc_"))
+@router.callback_query(StateFilter(AdminEditStates.choosing_account), F.data.startswith("admin_acc_"))
 async def account_selected(callback: CallbackQuery, state: FSMContext):
     account_id = int(callback.data.split("_")[2])
     logger.info(f"Admin {callback.from_user.id} selected account {account_id}")
     await state.update_data(account_id=account_id)
 
-    account = await get_account(account_id)
-    if not account:
-        await callback.answer("Аккаунт не найден", show_alert=True)
-        return
+    async with AsyncSessionLocal() as session:
+        account = await session.get(Account, account_id)
+
+    # Формируем подробный текст
+    text = format_admin_account_text(account)
 
     buttons = [
         [InlineKeyboardButton(text="🧪 Тестовый режим", callback_data="admin_test_mode")],
+        [InlineKeyboardButton(text="🤖 Системный промпт", callback_data="admin_edit_prompt")],
         [InlineKeyboardButton(text="✏️ Изменить фильтр", callback_data="admin_edit_filter")],
         [InlineKeyboardButton(text="📝 Изменить резюме", callback_data="admin_edit_resume")],
         [InlineKeyboardButton(text="🌐 Изменить прокси", callback_data="admin_edit_proxy")],
@@ -38,16 +42,21 @@ async def account_selected(callback: CallbackQuery, state: FSMContext):
     ]
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
-    await callback.message.edit_text(
-        f"Аккаунт: {account.username}\n"
-        f"ID: {account.id}\n"
-        f"Фильтр: {account.search_filter.get('url', 'не задан')}\n"
-        f"Лимит: {account.responses_today}/{account.daily_response_limit}\n"
-        f"Прокси: {account.proxy or 'не используется'}",
-        reply_markup=keyboard
-    )
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
     await state.set_state(AdminEditStates.choosing_action)
     await callback.answer()
+    # keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    #
+    # await callback.message.edit_text(
+    #     f"Аккаунт: {account.username}\n"
+    #     f"ID: {account.id}\n"
+    #     f"Фильтр: {account.search_filter.get('url', 'не задан')}\n"
+    #     f"Лимит: {account.responses_today}/{account.daily_response_limit}\n"
+    #     f"Прокси: {account.proxy or 'не используется'}",
+    #     reply_markup=keyboard
+    # )
+    # await state.set_state(AdminEditStates.choosing_action)
+    # await callback.answer()
 
 
 @router.callback_query(F.data == "admin_back_to_main")

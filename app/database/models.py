@@ -29,6 +29,7 @@ class Account(Base):
     proxy: Mapped[str] = mapped_column(String(200), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    system_prompt: Mapped[str] = mapped_column(Text, default="")
 
     # Новые поля для лимитов и расписания
     daily_limit_min: Mapped[int] = mapped_column(Integer, default=50)

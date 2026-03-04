@@ -12,6 +12,7 @@ class AdminEditStates(StatesGroup):
     editing_limit_range = State()
     editing_interval_range = State()
     editing_work_hours = State()
+    editing_prompt = State()
 
 
 class AdminAddAccountStates(StatesGroup):

@@ -117,11 +117,24 @@ async def run_test(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     account_id = data["account_id"]
     chat_id = callback.from_user.id
+    count = (await get_account(account_id)).test_count  # получаем количество
 
-    await callback.message.edit_text("🚀 Запускаю тестовые отклики... Это может занять некоторое время.")
-    run_test_for_account.delay(account_id, chat_id)
+    await callback.message.edit_text("🚀 Запускаю тестовую генерацию... Это может занять некоторое время.")
+    from app.worker.tasks import run_test_generation
+    run_test_generation.delay(account_id, chat_id, count)
     await state.clear()
     await callback.answer("Тест запущен. Результат придёт в этот чат.")
+
+# @router.callback_query(StateFilter(UserTestStates.main_menu), F.data == "test_run")
+# async def run_test(callback: CallbackQuery, state: FSMContext):
+#     data = await state.get_data()
+#     account_id = data["account_id"]
+#     chat_id = callback.from_user.id
+#
+#     await callback.message.edit_text("🚀 Запускаю тестовые отклики... Это может занять некоторое время.")
+#     run_test_for_account.delay(account_id, chat_id)
+#     await state.clear()
+#     await callback.answer("Тест запущен. Результат придёт в этот чат.")
 
 
 @router.callback_query(F.data == "test_back")

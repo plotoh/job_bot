@@ -19,6 +19,16 @@ async def get_all_accounts():
         return result.scalars().all()
 
 
+async def update_account_prompt(account_id: int, prompt: str) -> bool:
+    async with AsyncSessionLocal() as session:
+        account = await session.get(Account, account_id)
+        if not account:
+            return False
+        account.system_prompt = prompt
+        await session.commit()
+        return True
+
+
 async def update_account_filter(account_id: int, new_url: str) -> bool:
     async with AsyncSessionLocal() as session:
         account = await session.get(Account, account_id)

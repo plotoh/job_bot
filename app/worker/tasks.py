@@ -390,3 +390,56 @@ async def _parse_new_vacancies_for_account(account_id: int):
             session.add(new_vac)
             await session.commit()
             logger.info(f"Saved new vacancy {vac_data['id']} for account {account_id}")
+
+
+@celery_app.task
+def run_test_generation(account_id: int, chat_id: int, count: int):
+    run_async(_run_test_generation(account_id, chat_id, count))
+
+
+async def _run_test_generation(account_id: int, chat_id: int, count: int):
+    from app.database.models import AsyncSessionLocal, Account, Vacancy, AccountVacancy
+    from app.services.letter_generator import generate_cover_letter
+    from app.services.account import get_account
+    from sqlalchemy import select, func
+    import random
+
+    account = await get_account(account_id)
+    if not account:
+        await send_telegram_message(chat_id, "❌ Аккаунт не найден.")
+        return
+
+    async with AsyncSessionLocal() as session:
+        # Выбираем случайные вакансии, на которые аккаунт ещё не откликался
+        subq = select(AccountVacancy.vacancy_id).where(AccountVacancy.account_id == account_id)
+        stmt = select(Vacancy).where(Vacancy.id.not_in(subq)).order_by(func.random()).limit(count)
+        vacancies = await session.execute(stmt)
+        vacancies = vacancies.scalars().all()
+
+    if not vacancies:
+        await send_telegram_message(chat_id, "❌ Нет новых вакансий для теста.")
+        return
+
+    results = []
+    for i, vacancy in enumerate(vacancies, 1):
+        try:
+            letter = await generate_cover_letter(
+                vacancy_title=vacancy.title,
+                vacancy_description=vacancy.description,
+                company="Компания",
+                resume_text=account.resume_text,
+                secret_word=vacancy.check_word,
+                system_prompt=account.system_prompt if account.system_prompt else None
+            )
+            results.append(f"<b>{i}. {vacancy.title}</b>\n{vacancy.url}\n\n{letter}\n{'-' * 40}")
+        except Exception as e:
+            results.append(f"<b>{i}. {vacancy.title}</b>\nОшибка: {e}")
+
+    # Отправляем частями (Telegram лимит 4096 символов)
+    full_text = "\n\n".join(results)
+    if len(full_text) <= 4096:
+        await send_telegram_message(chat_id, full_text)
+    else:
+        # Разбиваем по 4000
+        for i in range(0, len(full_text), 4000):
+            await send_telegram_message(chat_id, full_text[i:i + 4000])
