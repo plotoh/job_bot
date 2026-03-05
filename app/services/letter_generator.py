@@ -1,81 +1,75 @@
-import asyncio
-import logging
+import random
+import re
 from typing import Optional
-import ollama
-from app.config import settings
 
-logger = logging.getLogger(__name__)
-
-DEFAULT_SYSTEM_PROMPT = """
-Ты — опытный карьерный консультант. Твоя задача — написать персонализированное сопроводительное письмо от имени соискателя на конкретную вакансию.
-
-Правила:
-- Приветствие должно быть простым - Здравствуйте / Добрый день.
-- Письмо должно быть деловым, но тёплым и конкретным. Не используй общие фразы.
-- Используй информацию из резюме кандидата, чтобы показать соответствие требованиям вакансии.
-- Если в описании вакансии есть проверочное слово, обязательно включи его в письмо естественным образом.
-- Не упоминай зарплату.
-- Длина письма — не более 500 символов.
-- Структура: приветствие, выражение интереса к компании/проекту (без излишних подробностей), краткое обоснование соответствия (2-3 предложения), готовность к собеседованию, прощание.
-- Не используй шаблонные фразы типа "Я узнал о вакансии...". Лучше сразу перейти к делу.
-- В конце добавь что-то наподобие: На любые вопросы готов ответить в тг и tg_username
-
-Вот информация:
-- Вакансия: {vacancy_title}, компания: {company}
-- Описание вакансии: {vacancy_description}
-- Резюме кандидата: {resume_text}
-- Проверочное слово: {secret_word}
-- telegram username: {tg_username}
+DEFAULT_TEMPLATE = """
+{secret_word_phrase}
+{Здравствуйте|Добрый день}! {Прошу рассмотреть мою кандидатуру на|Откликаюсь на|откликаюсь на вакансию|Прошу рассмотреть мой отклик на вакансию|Меня заинтересовала вакансия} {vacancy_name}.
+{Мои опыт и навыки подходят|Под требования подхожу|Соответствую требованиям|Опыт и навыки удовлетворяют ваш запрос|Мой опыт и навыки соответствуют вашим требованиям}. 
+{Хорошего рабочего дня!|Надеюсь на ответ.|Буду рад обсудить детали.|Буду рад обсудить детали на собеседовании}
+{Мой телеграм|tg|Telegram}: {tg_username}
 """
 
-FALLBACK_TEMPLATE = """
-Здравствуйте! Меня заинтересовала вакансия {vacancy_title}. Мой опыт и навыки соответствуют вашим требованиям. 
-{tg_part}
-Буду рад обсудить детали.
-"""
+
+def rand_text(text: str) -> str:
+    """
+    Заменяет конструкции {вариант1|вариант2} на случайный вариант.
+    Может быть вложенным.
+    """
+    while True:
+        match = re.search(r'{([^{}]+)}', text)
+        if not match:
+            break
+        options = match.group(1).split('|')
+        replacement = random.choice(options)
+        text = text[:match.start()] + replacement + text[match.end():]
+    return text
 
 
 async def generate_cover_letter(
         vacancy_title: str,
         vacancy_description: str,
-        company: str,
+        company: str,  # не используется
         resume_text: str,
         secret_word: Optional[str] = None,
-        system_prompt: Optional[str] = None,
-        tg_username: Optional[str] = None
+        system_prompt: Optional[str] = None,  # не используется
+        tg_username: Optional[str] = None,
+        template: Optional[str] = None
 ) -> str:
-    try:
-        if not system_prompt:
-            system_prompt = DEFAULT_SYSTEM_PROMPT
+    """
+    Генерирует сопроводительное письмо по шаблону.
+    Если template не задан, используется DEFAULT_TEMPLATE.
+    Поддерживаются переменные:
+        {vacancy_name}, {secret_word_phrase}, {tg_username}
+    """
+    if not template:
+        template = DEFAULT_TEMPLATE
 
-        system_prompt = system_prompt.format(
-            vacancy_title=vacancy_title,
-            company=company,
-            vacancy_description=vacancy_description,
-            resume_text=resume_text,
-            secret_word=secret_word or "нет",
-            tg_username=tg_username or "не указан"
-        )
+    # Подготовка фразы про проверочное слово
+    if secret_word:
+        secret_word_phrase = f"Проверочное слово: {secret_word}"
+    else:
+        secret_word_phrase = ""
 
-        client = ollama.Client(host=settings.OLLAMA_BASE_URL)
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(
-            None,
-            lambda: client.chat(
-                model=settings.OLLAMA_MODEL,
-                messages=[{"role": "system", "content": system_prompt}],
-                options={"temperature": 0.6, "num_predict": 500}
-            )
-        )
-        letter = response["message"]["content"].strip()
-        if not letter:
-            raise ValueError("LLM вернул пустой ответ")
-        return letter
-    except Exception as e:
-        logger.error(f"Ошибка генерации письма: {e}", exc_info=True)
-        tg_part = f"Мой Telegram: {tg_username}" if tg_username else ""
-        return FALLBACK_TEMPLATE.format(
-            vacancy_title=vacancy_title,
-            company=company,
-            tg_part=tg_part
-        ).strip()
+    # Подстановка переменных
+    letter = template.replace("{vacancy_name}", vacancy_title)
+    letter = letter.replace("{secret_word_phrase}", secret_word_phrase)
+    letter = letter.replace("{tg_username}", tg_username if tg_username else "")
+
+    # Обработка случайного выбора
+    letter = rand_text(letter)
+
+    # Если tg_username пустой, удаляем строку, содержащую упоминание Telegram
+    if not tg_username:
+        # Удаляем строки, где есть "Мой телеграм", "tg" или "Telegram" и двоеточие, после которого только пробелы или ничего
+        lines = letter.split('\n')
+        filtered_lines = []
+        for line in lines:
+            if re.search(r'(Мой телеграм|tg|Telegram)\s*:\s*$', line):
+                continue
+            filtered_lines.append(line)
+        letter = '\n'.join(filtered_lines)
+
+    # Очистка от лишних пробелов и переносов
+    letter = re.sub(r'\n\s*\n', '\n\n', letter).strip()
+    return letter

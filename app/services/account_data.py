@@ -33,22 +33,18 @@ def format_account_data(account: Account) -> Dict[str, Any]:
 def format_account_text(account: Account) -> str:
     """Возвращает форматированный текст для отображения пользователю (с тестовым блоком)."""
     data = format_account_data(account)
-
-    prompt_preview = "стандартный"
-    if account.system_prompt:
-        prompt_preview = account.system_prompt[:100] + "..." if len(
-            account.system_prompt) > 100 else account.system_prompt
+    max_pages = account.search_filter.get("max_pages", 1) if account.search_filter else 1
 
     text = (
         f"📋 <b>Данные вашего аккаунта</b>\n\n"
         f"🆔 ID: <code>{data['id']}</code>\n"
         f"🔑 Логин hh: <code>{data['username']}</code>\n"
         f"📄 Резюме (начало): <code>{data['resume_preview']}</code>\n"
-        f"🤖 <b>Системный промпт:</b> <code>{prompt_preview}</code>\n\n"
         f"🔎 Фильтр поиска:\n<pre>{data['search_filter']}</pre>\n"
         f"🌐 Прокси: <code>{data['proxy']}</code>\n\n"
         f"⚙️ <b>Лимиты и расписание</b>\n"
         f"   • Отправлено сегодня: {data['responses_today']} / {data['daily_response_limit']}\n"
+        f"   • Макс. страниц для парсинга: {max_pages}\n"
         f"   • Диапазон дневного лимита: {data['daily_limit_range']}\n"
         f"   • Интервал откликов: {data['response_interval_range']}\n"
         f"   • Рабочие часы: {data['work_hours']}\n"
@@ -64,18 +60,15 @@ def format_account_text(account: Account) -> str:
 
 def format_admin_account_text(account: Account) -> str:
     """Возвращает форматированный текст для отображения администратору (без тестового блока)."""
+    max_pages = account.search_filter.get("max_pages", 1) if account.search_filter else 1
     resume_full = account.resume_text[:500] + "..." if len(account.resume_text) > 500 else account.resume_text
     search_filter_str = json.dumps(account.search_filter, ensure_ascii=False,
                                    indent=2) if account.search_filter else "не задан"
     proxy_str = account.proxy if account.proxy else "не используется"
-    prompt_preview = "стандартный"
     decrypted_password = "не установлен"
 
     if account.password_encrypted:
         decrypted_password = decrypt_password(account.password_encrypted)
-    if account.system_prompt:
-        prompt_preview = account.system_prompt[:100] + "..." if len(
-            account.system_prompt) > 100 else account.system_prompt
 
     text = (
         f"👤 <b>Аккаунт пользователя</b>\n\n"
@@ -83,12 +76,12 @@ def format_admin_account_text(account: Account) -> str:
         f"🔑 Логин hh: <code>{account.username}</code>\n"
         f"🔑 Пароль hh: <span class=\"tg-spoiler\">{decrypted_password}</span>\n"
         f"📄 Резюме:\n<code>{resume_full}</code>\n\n"
-        f"🤖 <b>Системный промпт:</b> <code>{prompt_preview}</code>\n\n"
         f"🔎 Фильтр поиска:\n<pre>{search_filter_str}</pre>\n"
         f"🌐 Прокси: <code>{proxy_str}</code>\n\n"
-        f"⚙️ <b>Лимиты и расписание</b>\n"
+        f"⚙️ <b>Лимиты и расписание</b>\n"        
         f"   • Отправлено сегодня: {account.responses_today} / {account.daily_response_limit}\n"
-        f"   • Диапазон дневного лимита: {account.daily_limit_min}–{account.daily_limit_max}\n"
+        f"   • Макс. страниц для парсинга: {max_pages}\n"
+        f"   • Диапазон дневного лимита: {account.daily_limit_min}–{account.daily_limit_max} | текущий: {account.daily_response_limit}\n"
         f"   • Интервал откликов: {account.response_interval_min}–{account.response_interval_max} сек\n"
         f"   • Рабочие часы: {account.work_start_hour}:00 – {account.work_end_hour}:00\n"
         f"   • Последний сброс: {account.last_reset_date}"

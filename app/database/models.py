@@ -29,12 +29,11 @@ class Account(Base):
     proxy: Mapped[str] = mapped_column(String(200), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    system_prompt: Mapped[str] = mapped_column(Text, default="")
     telegram_username: Mapped[str] = mapped_column(String(100), nullable=True, default=None)
+    cookies_updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
 
-    # Новые поля для лимитов и расписания
-    daily_limit_min: Mapped[int] = mapped_column(Integer, default=50)
-    daily_limit_max: Mapped[int] = mapped_column(Integer, default=100)
+    daily_limit_min: Mapped[int] = mapped_column(Integer, default=53)
+    daily_limit_max: Mapped[int] = mapped_column(Integer, default=137)
     response_interval_min: Mapped[int] = mapped_column(Integer, default=120)  # секунды
     response_interval_max: Mapped[int] = mapped_column(Integer, default=480)  # 2-8 минут
     work_start_hour: Mapped[int] = mapped_column(Integer, default=10)  # час начала (мск)
@@ -47,6 +46,7 @@ class Account(Base):
 
     # Фильтр поиска вакансий (например, URL и макс. страниц)
     search_filter: Mapped[dict] = mapped_column(JSON, default={})
+    max_pages: Mapped[int] = mapped_column(Integer, default=2, nullable=False)
     resume_text: Mapped[str] = mapped_column(Text, default="")  # текст резюме
 
     # Связи

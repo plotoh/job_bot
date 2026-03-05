@@ -19,16 +19,6 @@ async def get_all_accounts():
         return result.scalars().all()
 
 
-async def update_account_prompt(account_id: int, prompt: str) -> bool:
-    async with AsyncSessionLocal() as session:
-        account = await session.get(Account, account_id)
-        if not account:
-            return False
-        account.system_prompt = prompt
-        await session.commit()
-        return True
-
-
 async def update_account_filter(account_id: int, new_url: str) -> bool:
     async with AsyncSessionLocal() as session:
         account = await session.get(Account, account_id)
@@ -123,14 +113,19 @@ async def update_account_work_hours(account_id: int, start: int, end: int) -> bo
 async def create_account(data: dict) -> bool:
     """Создаёт новый аккаунт из словаря с полями."""
     async with AsyncSessionLocal() as session:
+        max_pages = data.get('max_pages', 2)
         account = Account(
             id=data['account_id'],
             username=data['username'],
             password_encrypted=data['password_encrypted'],
             resume_id=data['resume_id'],
             proxy=data.get('proxy'),
-            search_filter={"url": data['filter_url'], "max_pages": data['max_pages']},
+            search_filter={"url": data['filter_url']},
+            max_pages=2,
+            daily_limit_min=50,  # явно
+            daily_limit_max=100,
         )
+        account.daily_response_limit = random.randint(account.daily_limit_min, account.daily_limit_max)
         session.add(account)
         await session.commit()
         return True
@@ -180,3 +175,12 @@ async def get_account_with_reset(account_id: int) -> Optional[Account]:
             await session.refresh(account)
         return account
 
+
+async def update_account_max_pages(account_id: int, max_pages: int) -> bool:
+    async with AsyncSessionLocal() as session:
+        account = await session.get(Account, account_id)
+        if not account:
+            return False
+        account.max_pages = max_pages
+        await session.commit()
+        return True

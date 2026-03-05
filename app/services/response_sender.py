@@ -1,53 +1,54 @@
 import logging
-import asyncio
-
-from playwright.async_api import async_playwright
+from datetime import datetime
+from typing import Dict, Optional
 
 from app.database.models import AsyncSessionLocal, Account, Response, Vacancy
+from app.services.hh_api import HHApiClient
+from app.services.login import login_and_get_cookies
 from app.utils.proxy_rotator import get_proxy_for_account
 from app.utils.encryption import decrypt_password
 
 logger = logging.getLogger(__name__)
 
 
-async def ensure_cookies(account: Account):
-    """Проверяет наличие cookies, при необходимости выполняет вход и сохраняет новые cookies."""
+async def ensure_cookies(account: Account) -> Dict[str, str]:
+    """
+    Проверяет валидность cookies, при необходимости обновляет их через логин.
+    Возвращает словарь cookies.
+    """
     if account.cookies:
-        # Можно проверить валидность, попытавшись открыть страницу, но для простоты считаем, что ок
-        return account.cookies
+        # Проверим, работают ли они (быстрый запрос)
+        client = HHApiClient(
+            account_id=account.id,
+            cookies=account.cookies,
+            resume_hash=account.resume_id,
+            proxy=get_proxy_for_account(account.id)
+        )
+        if client.is_logged_in():
+            return account.cookies
 
-    # Выполняем вход
-    async with async_playwright() as p:
-        proxy = get_proxy_for_account(account.id)
-        browser = await p.chromium.launch(headless=True, proxy=proxy)
-        context = await browser.new_context()
-        page = await context.new_page()
+    # Нужно выполнить вход и получить новые cookies
+    logger.info(f"Refreshing cookies for account {account.id}")
+    new_cookies = await login_and_get_cookies(
+        account.username,
+        decrypt_password(account.password_encrypted)
+    )
+    if not new_cookies:
+        raise Exception("Failed to login and obtain cookies")
 
-        try:
-            # Переходим на страницу входа
-            await page.goto("https://hh.ru/account/login", wait_until="domcontentloaded")
-            # Заполняем форму (селекторы могут меняться)
-            await page.fill('input[name="username"]', account.username)
-            password = decrypt_password(account.password_encrypted)
-            await page.fill('input[name="password"]', password)
-            await page.click('button[data-qa="account-login-submit"]')
-            # Ждём перехода на главную или появления признака авторизации
-            await page.wait_for_selector('[data-qa="main-page"]', timeout=10000)
-            # Сохраняем cookies
-            cookies = await context.cookies()
-            account.cookies = cookies
-            async with AsyncSessionLocal() as session:
-                await session.merge(account)
-                await session.commit()
-            return cookies
-        except Exception as e:
-            logger.error(f"Login failed for account {account.id}: {e}")
-            raise
-        finally:
-            await browser.close()
+    # Сохраняем в БД
+    async with AsyncSessionLocal() as session:
+        acc = await session.get(Account, account.id)
+        acc.cookies = new_cookies
+        await session.commit()
+
+    return new_cookies
 
 
 async def send_response(account_id: int, vacancy_id: int, response_id: int) -> bool:
+    """
+    Отправляет отклик через HTTP-клиент.
+    """
     async with AsyncSessionLocal() as session:
         account = await session.get(Account, account_id)
         vacancy = await session.get(Vacancy, vacancy_id)
@@ -56,58 +57,34 @@ async def send_response(account_id: int, vacancy_id: int, response_id: int) -> b
         if not account or not vacancy or not response:
             raise ValueError("Account, vacancy or response not found")
 
-        # Получаем актуальные cookies (авторизуемся при необходимости)
+        # Получаем валидные cookies
         cookies = await ensure_cookies(account)
 
+        # Создаём клиент
         proxy = get_proxy_for_account(account_id)
+        client = HHApiClient(
+            account_id=account.id,
+            cookies=cookies,
+            resume_hash=account.resume_id,
+            proxy=proxy
+        )
 
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                proxy=proxy
-            )
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            )
-            await context.add_cookies(cookies)
+        # Отправляем отклик
+        success, error_msg = client.apply(
+            vacancy_id=vacancy_id,
+            vacancy_url=vacancy.url,
+            letter=response.cover_letter
+        )
 
-            page = await context.new_page()
-            await page.goto(vacancy.url, wait_until="domcontentloaded", timeout=30000)
-
-            # Жмём кнопку отклика
-            try:
-                await page.wait_for_selector('[data-qa="vacancy-response-button"]', timeout=10000)
-                await page.click('[data-qa="vacancy-response-button"]')
-            except Exception as e:
-                logger.error(f"Response button not found: {e}")
-                await browser.close()
-                raise
-
-            # Заполняем письмо
-            try:
-                await page.wait_for_selector('[data-qa="response-letter-field"]', timeout=10000)
-                await page.fill('[data-qa="response-letter-field"]', response.cover_letter)
-            except Exception as e:
-                logger.error(f"Letter field not found: {e}")
-                await browser.close()
-                raise
-
-            # Отправляем
-            try:
-                await page.click('[data-qa="response-submit-button"]')
-                await page.wait_for_selector('[data-qa="response-success-message"]', timeout=10000)
-            except Exception as e:
-                logger.error(f"Submission failed: {e}")
-                await browser.close()
-                raise
-
-            # Обновляем cookies (на случай, если они изменились)
-            new_cookies = await context.cookies()
-            account.cookies = new_cookies
-            async with AsyncSessionLocal() as update_session:
-                await update_session.merge(account)
-                await update_session.commit()
-
-            await browser.close()
+        if success:
             logger.info(f"Response {response_id} sent successfully")
+            response.status = "sent"
+            response.sent_at = datetime.utcnow()
+            await session.commit()
             return True
+        else:
+            logger.error(f"Failed to send response {response_id}: {error_msg}")
+            response.status = "error"
+            response.error_message = error_msg
+            await session.commit()
+            return False

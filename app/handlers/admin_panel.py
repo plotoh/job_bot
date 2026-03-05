@@ -1,10 +1,18 @@
+import os
+import tempfile
+import http.cookiejar
+from aiogram.types import FSInputFile
+from aiogram import Bot
+from app.config import settings
+
+import json
 import logging
 from aiogram import types, F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from sqlalchemy import select, func
-from datetime import date
+from datetime import date, datetime
 
 from app.config import settings
 from app.database.models import AsyncSessionLocal, Account, Response, Invitation
@@ -13,7 +21,7 @@ from app.services.account import (
     get_all_accounts, create_account,
     update_account_filter, update_account_resume, update_account_proxy, update_account_limit_range,
     update_account_interval_range, update_account_work_hours,
-    update_account_prompt, update_account_telegram_username, get_account_with_reset
+    update_account_telegram_username, get_account_with_reset, update_account_max_pages
 )
 from app.services.account_data import format_admin_account_text
 from app.handlers.test_mode import show_test_menu
@@ -95,11 +103,11 @@ async def account_selected(callback: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="✏️ Изменить фильтр", callback_data="admin_edit_filter")],
         [InlineKeyboardButton(text="📝 Изменить резюме", callback_data="admin_edit_resume")],
         [InlineKeyboardButton(text="🌐 Изменить прокси", callback_data="admin_edit_proxy")],
-        # Убрана кнопка "🔢 Изменить лимит откликов"
+        [InlineKeyboardButton(text="📤 Загрузить cookies из файла", callback_data="admin_upload_cookies")],
+        [InlineKeyboardButton(text="📥 Скачать cookies как файл", callback_data="admin_download_cookies")],        [InlineKeyboardButton(text="🔢 Количество страниц парсинга", callback_data="admin_edit_max_pages")],
         [InlineKeyboardButton(text="⚙️ Лимит (диапазон)", callback_data="admin_edit_limit_range")],
         [InlineKeyboardButton(text="⏱ Интервал отклика", callback_data="admin_edit_interval")],
         [InlineKeyboardButton(text="🕒 Рабочие часы", callback_data="admin_edit_work_hours")],
-        [InlineKeyboardButton(text="🤖 Системный промпт", callback_data="admin_edit_prompt")],
         [InlineKeyboardButton(text="◀️ Назад к списку", callback_data="admin_back_to_main")],
         [InlineKeyboardButton(text="❌ Закрыть", callback_data="admin_close")],
     ]
@@ -347,30 +355,6 @@ async def edit_work_hours_save(message: types.Message, state: FSMContext):
     await account_selected_by_id(message, account_id, state)
 
 
-# ----- Системный промпт -----
-@router.callback_query(StateFilter(AdminEditStates.choosing_action), F.data == "admin_edit_prompt")
-async def edit_prompt_start(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text(
-        "Введите новый системный промпт (можно использовать Markdown). Отправьте '-' чтобы сбросить к стандартному.")
-    await state.set_state(AdminEditStates.editing_prompt)
-    await callback.answer()
-
-
-@router.message(StateFilter(AdminEditStates.editing_prompt), F.text)
-async def edit_prompt_save(message: types.Message, state: FSMContext):
-    new_prompt = message.text.strip()
-    if new_prompt == "-":
-        new_prompt = None
-    data = await state.get_data()
-    account_id = data["account_id"]
-    success = await update_account_prompt(account_id, new_prompt)
-    if success:
-        await message.answer("✅ Системный промпт обновлён!")
-    else:
-        await message.answer("❌ Аккаунт не найден.")
-    await account_selected_by_id(message, account_id, state)
-
-
 # ----- Вспомогательная функция для возврата в меню аккаунта -----
 async def account_selected_by_id(update: types.Message | CallbackQuery, account_id: int, state: FSMContext):
     # Эмулируем выбор аккаунта, чтобы показать меню
@@ -382,11 +366,11 @@ async def account_selected_by_id(update: types.Message | CallbackQuery, account_
         [InlineKeyboardButton(text="✏️ Изменить фильтр", callback_data="admin_edit_filter")],
         [InlineKeyboardButton(text="📝 Изменить резюме", callback_data="admin_edit_resume")],
         [InlineKeyboardButton(text="🌐 Изменить прокси", callback_data="admin_edit_proxy")],
-        [InlineKeyboardButton(text="🔢 Изменить лимит откликов", callback_data="admin_edit_limit")],
-        [InlineKeyboardButton(text="⚙️ Лимит (диапазон)", callback_data="admin_edit_limit_range")],
+        [InlineKeyboardButton(text="🔢 Количество страниц парсинга", callback_data="admin_edit_max_pages")],
+        [InlineKeyboardButton(text="📤 Загрузить cookies из файла", callback_data="admin_upload_cookies")],
+        [InlineKeyboardButton(text="📥 Скачать cookies как файл", callback_data="admin_download_cookies")],        [InlineKeyboardButton(text="⚙️ Лимит (диапазон)", callback_data="admin_edit_limit_range")],
         [InlineKeyboardButton(text="⏱ Интервал отклика", callback_data="admin_edit_interval")],
         [InlineKeyboardButton(text="🕒 Рабочие часы", callback_data="admin_edit_work_hours")],
-        [InlineKeyboardButton(text="🤖 Системный промпт", callback_data="admin_edit_prompt")],
         [InlineKeyboardButton(text="📱 Telegram username", callback_data="admin_edit_telegram_username")],
         [InlineKeyboardButton(text="◀️ Назад к списку", callback_data="admin_back_to_main")],
         [InlineKeyboardButton(text="❌ Закрыть", callback_data="admin_close")],
@@ -462,31 +446,251 @@ async def add_account_proxy(message: types.Message, state: FSMContext):
 @router.message(AdminAddAccountStates.waiting_filter_url, F.text)
 async def add_account_filter_url(message: types.Message, state: FSMContext):
     await state.update_data(filter_url=message.text)
-    await message.answer("Введите максимальное количество страниц для парсинга (целое число):")
-    await state.set_state(AdminAddAccountStates.waiting_filter_pages)
-
-
-@router.message(AdminAddAccountStates.waiting_filter_pages, F.text)
-async def add_account_filter_pages(message: types.Message, state: FSMContext):
-    try:
-        pages = int(message.text)
-    except ValueError:
-        await message.answer("❌ Введите целое число.")
-        return
 
     data = await state.get_data()
-    success = await create_account({
-        'account_id': data['account_id'],
-        'username': data['username'],
-        'password_encrypted': data['password_encrypted'],
-        'resume_id': data['resume_id'],
-        'proxy': data.get('proxy'),
-        'filter_url': data['filter_url'],
-        'max_pages': pages,
-    })
+    success = await create_account(data)
     if success:
         await message.answer("✅ Аккаунт успешно создан!")
     else:
         await message.answer("❌ Ошибка при создании аккаунта.")
     await state.clear()
     await admin_main_menu(message, state)
+
+
+# @router.message(AdminAddAccountStates.waiting_filter_pages, F.text)
+# async def add_account_filter_pages(message: types.Message, state: FSMContext):
+#     try:
+#         pages = int(message.text)
+#     except ValueError:
+#         await message.answer("❌ Введите целое число.")
+#         return
+
+@router.callback_query(StateFilter(AdminEditStates.choosing_action), F.data == "admin_edit_max_pages")
+async def edit_max_pages_start(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text(
+        "Введите новое максимальное количество страниц для парсинга (целое число, например 3):")
+    await state.set_state(AdminEditStates.editing_max_pages)
+    await callback.answer()
+
+
+@router.message(StateFilter(AdminEditStates.editing_max_pages), F.text)
+async def edit_max_pages_save(message: types.Message, state: FSMContext):
+    try:
+        max_pages = int(message.text)
+    except ValueError:
+        await message.answer("❌ Введите целое число.")
+        return
+    if max_pages <= 0:
+        await message.answer("❌ Число должно быть положительным.")
+        return
+
+    data = await state.get_data()
+    account_id = data["account_id"]
+    if await update_account_max_pages(account_id, max_pages):
+        await message.answer("✅ Количество страниц обновлено!")
+    else:
+        await message.answer("❌ Аккаунт не найден.")
+        return
+
+    # Возвращаемся в меню аккаунта
+    await account_selected_by_id(message, account_id, state)
+
+
+@router.callback_query(StateFilter(AdminEditStates.choosing_action), F.data == "admin_set_cookies")
+async def set_cookies_start(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text(
+        "Отправьте cookies для этого аккаунта в формате JSON.\n"
+        "Пример: {\"hh\": \"abc123\", \"_xsrf\": \"def456\"}\n"
+        "Вы можете скопировать их из браузера (F12 → Application → Cookies → hh.ru)."
+    )
+    await state.set_state("admin_waiting_cookies")
+    await callback.answer()
+
+
+@router.message(StateFilter("admin_waiting_cookies"), F.text)
+async def set_cookies_save(message: types.Message, state: FSMContext):
+    try:
+        cookies = json.loads(message.text)
+        if not isinstance(cookies, dict):
+            raise ValueError("Not a dict")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка парсинга JSON: {e}. Попробуйте ещё раз.")
+        return
+    data = await state.get_data()
+    account_id = data["account_id"]
+    async with AsyncSessionLocal() as session:
+        account = await session.get(Account, account_id)
+        if account:
+            account.cookies = cookies
+            account.cookies_updated_at = datetime.utcnow()
+            await session.commit()
+            await message.answer("✅ Cookies сохранены!")
+        else:
+            await message.answer("❌ Аккаунт не найден.")
+    await account_selected_by_id(message, account_id, state)
+
+#
+# @router.message(StateFilter(AdminEditStates.choosing_action), F.document)
+# async def upload_cookies_file(message: types.Message, state: FSMContext):
+#     # Проверка, что это документ
+#     if not message.document:
+#         return
+#     # Скачиваем файл
+#     file_id = message.document.file_id
+#     file = await bot.get_file(file_id)
+#     file_path = file.file_path
+#     # Создаём временный файл
+#     import tempfile
+#     with tempfile.NamedTemporaryFile(delete=False, suffix='.txt') as tmp:
+#         await bot.download_file(file_path, tmp.name)
+#         tmp_path = tmp.name
+#
+#     # Парсим куки
+#     try:
+#         jar = http.cookiejar.MozillaCookieJar(tmp_path)
+#         jar.load(ignore_discard=True, ignore_expires=True)
+#         # Преобразуем в словарь
+#         cookies_dict = {}
+#         for cookie in jar:
+#             cookies_dict[cookie.name] = cookie.value
+#     except Exception as e:
+#         await message.answer(f"❌ Ошибка при парсинге файла: {e}")
+#         os.unlink(tmp_path)
+#         return
+#     finally:
+#         os.unlink(tmp_path)
+#
+#     # Сохраняем в БД для текущего аккаунта
+#     data = await state.get_data()
+#     account_id = data.get("account_id")
+#     if not account_id:
+#         await message.answer("❌ Аккаунт не выбран")
+#         return
+#
+#     async with AsyncSessionLocal() as session:
+#         account = await session.get(Account, account_id)
+#         if account:
+#             account.cookies = cookies_dict
+#             account.cookies_updated_at = datetime.utcnow()
+#             await session.commit()
+#             await message.answer("✅ Cookies успешно загружены из файла и сохранены!")
+#         else:
+#             await message.answer("❌ Аккаунт не найден")
+#
+#     # Возвращаемся в меню аккаунта
+#     await account_selected_by_id(message, account_id, state)
+
+@router.callback_query(StateFilter(AdminEditStates.choosing_action), F.data == "admin_upload_cookies")
+async def upload_cookies_start(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text(
+        "📤 Отправьте файл с cookies в формате Netscape (cookies.txt).\n\n"
+        "Как получить такой файл:\n"
+        "1. Установите расширение 'Get cookies.txt' для Chrome/Edge.\n"
+        "2. Зайдите на hh.ru, выполните вход.\n"
+        "3. Нажмите на иконку расширения и выберите 'Export'.\n"
+        "4. Пришлите полученный файл сюда."
+    )
+    await state.set_state(AdminEditStates.waiting_cookies_file)
+    await callback.answer()
+
+@router.message(StateFilter(AdminEditStates.waiting_cookies_file), F.document)
+async def upload_cookies_file(message: types.Message, state: FSMContext, bot: Bot):
+    document = message.document
+    if not document.file_name.endswith('.txt'):
+        await message.answer("❌ Пожалуйста, отправьте файл с расширением .txt")
+        return
+
+    # Скачиваем файл
+    file = await bot.get_file(document.file_id)
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.txt') as tmp:
+        await bot.download_file(file.file_path, tmp.name)
+        tmp_path = tmp.name
+
+    # Парсим cookies
+    try:
+        jar = http.cookiejar.MozillaCookieJar(tmp_path)
+        jar.load(ignore_discard=True, ignore_expires=True)
+        cookies_dict = {}
+        for cookie in jar:
+            cookies_dict[cookie.name] = cookie.value
+    except Exception as e:
+        await message.answer(f"❌ Ошибка при парсинге файла: {e}")
+        os.unlink(tmp_path)
+        return
+    finally:
+        os.unlink(tmp_path)
+
+    # Сохраняем в БД
+    data = await state.get_data()
+    account_id = data.get("account_id")
+    if not account_id:
+        await message.answer("❌ Аккаунт не выбран")
+        await state.clear()
+        return
+
+    async with AsyncSessionLocal() as session:
+        account = await session.get(Account, account_id)
+        if not account:
+            await message.answer("❌ Аккаунт не найден")
+            await state.clear()
+            return
+        account.cookies = cookies_dict
+        account.cookies_updated_at = datetime.utcnow()
+        await session.commit()
+
+    await message.answer(f"✅ Cookies успешно загружены. Сохранено {len(cookies_dict)} записей.")
+
+    # Возвращаемся в меню аккаунта
+    await account_selected_by_id(message, account_id, state)
+
+
+@router.callback_query(StateFilter(AdminEditStates.choosing_action), F.data == "admin_download_cookies")
+async def download_cookies(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    account_id = data.get("account_id")
+    if not account_id:
+        await callback.answer("Аккаунт не выбран", show_alert=True)
+        return
+
+    async with AsyncSessionLocal() as session:
+        account = await session.get(Account, account_id)
+        if not account or not account.cookies:
+            await callback.answer("Нет cookies для экспорта", show_alert=True)
+            return
+        cookies_dict = account.cookies
+
+    # Создаём временный файл в формате Netscape
+    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8') as tmp:
+        jar = http.cookiejar.MozillaCookieJar(tmp.name)
+        for name, value in cookies_dict.items():
+            # Заполняем минимально необходимые поля
+            cookie = http.cookiejar.Cookie(
+                version=0,
+                name=name,
+                value=value,
+                port=None,
+                port_specified=False,
+                domain=".hh.ru",          # Предполагаем, что все cookies для hh.ru
+                domain_specified=True,
+                domain_initial_dot=True,
+                path="/",
+                path_specified=True,
+                secure=False,
+                expires=None,
+                discard=False,
+                comment=None,
+                comment_url=None,
+                rest={},
+                rfc2109=False
+            )
+            jar.set_cookie(cookie)
+        jar.save(ignore_discard=True, ignore_expires=True)
+        tmp_path = tmp.name
+
+    # Отправляем файл
+    await callback.message.answer_document(
+        FSInputFile(tmp_path),
+        caption=f"Cookies для аккаунта {account.username} (формат Netscape)"
+    )
+    os.unlink(tmp_path)
+    await callback.answer()

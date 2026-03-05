@@ -6,7 +6,8 @@ def get_main_keyboard(user_id: int = None) -> ReplyKeyboardMarkup:
     if user_id == settings.ADMIN_ID:
         # Для администратора только одна кнопка в ряду
         keyboard = [
-            [KeyboardButton(text="👑 Админ-панель")]
+            [KeyboardButton(text="👑 Админ-панель")],
+            [KeyboardButton(text="🔍 Парсинг вакансий по фильтру")],
         ]
     else:
         # Для обычного пользователя все кнопки

@@ -14,6 +14,9 @@ class AdminEditStates(StatesGroup):
     editing_interval_range = State()
     editing_work_hours = State()
     editing_prompt = State()
+    editing_max_pages = State()
+    waiting_cookies = State()
+    waiting_cookies_file = State()
 
 
 class AdminAddAccountStates(StatesGroup):
