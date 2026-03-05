@@ -1,0 +1,25 @@
+[project]
+name = "job-bot"
+version = "0.1.0"
+description = "Telegram bot for HeadHunter automation"
+readme = "README.md"
+authors = [{name = "Your Name", email = "your.email@example.com"}]
+license = {text = "MIT"}
+requires-python = ">=3.11,<3.15"
+dependencies = [
+    "aiogram>=3.26.0",
+    "aiohttp>=3.13.3",
+    "celery>=5.6.2",
+    "cryptography>=46.0.5",
+    "pydantic>=2.12.5",
+    "pydantic-settings>=2.7.0",
+    "python-dotenv>=1.2.2",
+    "pytz>=2026.1",
+    "redis>=5.0.0",
+    "SQLAlchemy>=2.0.48",
+    "asyncpg>=0.31.0",
+]
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

@@ -40,7 +40,7 @@ services:
   bot:
     build: .
     container_name: job_bot_bot
-    command: python -m app.main
+    command: sh -c "alembic upgrade head && python -m app.main"
     env_file:
       - .env
     depends_on:
@@ -94,3 +94,13 @@ services:
 volumes:
   pg_data:
     name: job_bot_pg_data
+
+migration:
+  build: .
+  command: sh -c "alembic upgrade head"
+  env_file:
+    - .env
+  depends_on:
+    postgres:
+      condition: service_healthy
+  restart: "no"

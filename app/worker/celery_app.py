@@ -14,18 +14,18 @@ celery_app = Celery(
 celery_app.conf.beat_schedule = {
     'parse-all-vacancies-daily': {
         'task': 'app.worker.tasks.parse_all_vacancies',
-        'schedule': crontab(hour=8, minute=0),  # каждый день в 8:00
+        'schedule': crontab(hour=8, minute=0),
     },
     'generate-and-send-responses': {
         'task': 'app.worker.tasks.generate_and_send_responses',
-        'schedule': 30 * 60,  # каждые 30 минут
+        'schedule': 30 * 60,
     },
     'reset-daily-limits': {
         'task': 'app.worker.tasks.reset_daily_limits',
-        'schedule': crontab(hour=0, minute=0),  # каждый день в полночь
+        'schedule': crontab(hour=0, minute=0),
     },
     'refresh-all-cookies': {
         'task': 'app.worker.tasks.refresh_all_cookies',
-        'schedule': crontab(minute=0, hour='*/12'),  # каждые 12 часов (0:00 и 12:00)
+        'schedule': crontab(minute=0, hour='*/12'),
     },
 }

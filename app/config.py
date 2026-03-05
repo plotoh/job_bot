@@ -1,3 +1,5 @@
+from typing import ClassVar
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
@@ -30,7 +32,7 @@ class Settings(BaseSettings):
     PARSE_INTERVAL: int = 60
     CHECK_INVITATIONS_INTERVAL: int = 30
 
-    DEFAULT_LETTER_TEMPLATE = """
+    DEFAULT_LETTER_TEMPLATE: ClassVar[str] = """
     {secret_word_phrase}
     {Здравствуйте|Добрый день}! {Прошу рассмотреть мою кандидатуру на|Откликаюсь на|откликаюсь на вакансию|Прошу рассмотреть мой отклик на вакансию|Меня заинтересовала вакансия} {vacancy_name}.
     {Мои опыт и навыки подходят|Под требования подхожу|Соответствую требованиям|Опыт и навыки удовлетворяют ваш запрос|Мой опыт и навыки соответствуют вашим требованиям}. 
