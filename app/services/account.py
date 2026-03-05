@@ -8,9 +8,6 @@ from app.utils.db import get_session  # мы создадим ниже
 from app.utils.encryption import encrypt_password
 
 
-
-
-
 async def get_account(account_id: int) -> Optional[Account]:
     async with AsyncSessionLocal() as session:
         return await session.get(Account, account_id)
@@ -137,3 +134,49 @@ async def create_account(data: dict) -> bool:
         session.add(account)
         await session.commit()
         return True
+
+
+async def update_account_telegram_username(account_id: int, tg_username: Optional[str]) -> bool:
+    async with AsyncSessionLocal() as session:
+        account = await session.get(Account, account_id)
+        if not account:
+            return False
+        account.telegram_username = tg_username
+        await session.commit()
+        return True
+
+
+async def update_test_flags(account_id: int, flag: str):
+    async with AsyncSessionLocal() as session:
+        account = await session.get(Account, account_id)
+        if flag == "parse":
+            account.test_parse_vacancy = not account.test_parse_vacancy
+        elif flag == "generate":
+            account.test_generate_letter = not account.test_generate_letter
+        elif flag == "send":
+            account.test_send_response = not account.test_send_response
+        await session.commit()
+
+
+async def update_test_count(account_id: int, count: int):
+    async with AsyncSessionLocal() as session:
+        account = await session.get(Account, account_id)
+        account.test_count = count
+        await session.commit()
+
+
+async def get_account_with_reset(account_id: int) -> Optional[Account]:
+    """Получает аккаунт и сбрасывает дневной лимит, если наступил новый день."""
+    async with AsyncSessionLocal() as session:
+        account = await session.get(Account, account_id)
+        if not account:
+            return None
+        today = date.today()
+        if account.last_reset_date < today:
+            account.responses_today = 0
+            account.daily_response_limit = random.randint(account.daily_limit_min, account.daily_limit_max)
+            account.last_reset_date = today
+            await session.commit()
+            await session.refresh(account)
+        return account
+

@@ -3,28 +3,28 @@ import asyncio
 import logging
 import random
 from datetime import date, datetime
-from typing import List, Dict, Optional
+from typing import Optional
 
 import aiohttp
 import pytz
 from sqlalchemy import select, func, update
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from app.config import settings
 from app.database.models import Account, Vacancy, AccountVacancy, Response, Base
-from app.services.vacancy_filter import is_backend_python_keywords, extract_secret_word
+from app.services.vacancy_parser import HHSearcher, HHDetailParser
+from app.services.vacancy_filter import is_backend_python_keywords, extract_secret_word, extract_secret_word_llm
+from app.services.letter_generator import generate_cover_letter
+from app.services.response_sender import send_response
 from app.utils.proxy_rotator import get_proxy_for_account
 from app.worker.celery_app import celery_app
-from app.services.response_sender import send_response
-from app.services.letter_generator import generate_cover_letter
-from app.services.hh_parser import HHParser
 
 logger = logging.getLogger(__name__)
 
-# Ленивое создание асинхронного движка и сессии
+# ---------- Настройка асинхронной сессии ----------
 _engine = None
 _SessionLocal = None
+
 
 def get_db_session():
     global _engine, _SessionLocal
@@ -38,7 +38,7 @@ def get_db_session():
 
 
 def run_async(coro):
-    """Вспомогательная функция для запуска асинхронной корутины в синхронной Celery-задаче."""
+    """Запуск асинхронной корутины в синхронной задаче Celery."""
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
@@ -47,10 +47,18 @@ def run_async(coro):
     return loop.run_until_complete(coro)
 
 
+# ---------- Вспомогательная функция для отправки сообщений в Telegram ----------
+async def send_telegram_message(chat_id: int, text: str):
+    url = f"https://api.telegram.org/bot{settings.BOT_TOKEN}/sendMessage"
+    async with aiohttp.ClientSession() as session:
+        await session.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"})
+
+
 # ---------- Парсинг всех новых вакансий (общий) ----------
 @celery_app.task
 def parse_all_vacancies():
-    """Собирает вакансии по фильтрам всех активных аккаунтов и сохраняет в общую таблицу vacancies."""
+    """Собирает вакансии по фильтрам всех активных аккаунтов и сохраняет в таблицу vacancies."""
+    logger.info("Starting parse_all_vacancies task")
     run_async(_parse_all_vacancies())
 
 
@@ -58,60 +66,63 @@ async def _parse_all_vacancies():
     async with get_db_session()() as session:
         result = await session.execute(select(Account).where(Account.is_active == True))
         accounts = result.scalars().all()
+        logger.info(f"Found {len(accounts)} active accounts")
 
         all_vacancies = []
         for account in accounts:
-            search_filter = account.search_filter
+            search_filter = account.search_filter or {}
             if not search_filter.get("url"):
+                logger.debug(f"Account {account.id} has no search filter, skipping")
                 continue
 
-            proxy = get_proxy_for_account(account.id)
-            parser = HHParser(account_id=account.id, proxy=proxy)
-
+            searcher = HHSearcher(account_id=account.id, proxy=get_proxy_for_account(account.id))
             try:
-                vacancies = await parser.search_vacancies(
+                vacancies = await searcher.search(
                     search_url=search_filter["url"],
                     max_pages=search_filter.get("max_pages", 1)
                 )
+                logger.info(f"Account {account.id}: found {len(vacancies)} vacancies on search pages")
                 all_vacancies.extend(vacancies)
             except Exception as e:
-                logger.error(f"Error parsing vacancies for account {account.id}: {e}")
+                logger.error(f"Error searching vacancies for account {account.id}: {e}", exc_info=True)
                 continue
 
+        # Убираем дубликаты по hh_id
         unique_vacs = {v["id"]: v for v in all_vacancies if v.get("id")}.values()
+        logger.info(f"Total unique vacancies found: {len(unique_vacs)}")
 
         for vac_data in unique_vacs:
+            # Проверяем, есть ли уже в БД
             existing = await session.execute(
                 select(Vacancy).where(Vacancy.hh_id == vac_data["id"])
             )
             if existing.scalar_one_or_none():
+                logger.debug(f"Vacancy {vac_data['id']} already exists, skipping")
                 continue
 
-            proxy = get_proxy_for_account(0)
-            parser = HHParser(account_id=0, proxy=proxy)
-            try:
-                details = await parser.parse_vacancy_details(vac_data["link"])
-                if "error" in details:
-                    logger.error(f"Error parsing details for {vac_data['link']}: {details['error']}")
-                    continue
-            except Exception as e:
-                logger.error(f"Exception parsing details for {vac_data['link']}: {e}")
+            parser = HHDetailParser(proxy=get_proxy_for_account(0))
+            details = await parser.parse(vac_data["link"])
+            if "error" in details:
+                logger.error(f"Error parsing details for {vac_data['link']}: {details['error']}")
                 continue
 
+            # Фильтрация по ключевым словам
             if not is_backend_python_keywords(vac_data["title"], details.get("description", "")):
-                logger.info(f"Vacancy {vac_data['title']} does not match backend Python, skipping")
+                logger.info(f"Vacancy {vac_data['title']} does not match backend Python keywords, skipping")
                 continue
 
-            description = details.get("description", "")
-            secret = extract_secret_word(description)
-            if not secret and description:
-                secret = await _extract_secret_word_llm(description)
+            # Извлечение проверочного слова
+            secret = extract_secret_word(details.get("description", ""))
+            if not secret and details.get("description"):
+                secret = await extract_secret_word_llm(details["description"])
+                if secret:
+                    logger.info(f"Secret word extracted via LLM for vacancy {vac_data['id']}: {secret}")
 
             new_vac = Vacancy(
                 hh_id=vac_data["id"],
                 title=vac_data["title"],
                 url=vac_data["link"],
-                description=description,
+                description=details.get("description", ""),
                 check_word=secret
             )
             session.add(new_vac)
@@ -119,27 +130,11 @@ async def _parse_all_vacancies():
             logger.info(f"Saved new vacancy: {vac_data['title']} (ID: {vac_data['id']})")
 
 
-async def _extract_secret_word_llm(description: str) -> Optional[str]:
-    import ollama
-    prompt = f"Найди в тексте вакансии проверочное слово, которое кандидат должен указать в отклике. Если такого слова нет, ответь 'НЕТ'. Текст:\n\n{description[:2000]}"
-    try:
-        response = ollama.chat(
-            model=settings.OLLAMA_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0}
-        )
-        answer = response["message"]["content"].strip()
-        if answer.upper() == "НЕТ" or len(answer) > 50:
-            return None
-        return answer
-    except Exception as e:
-        logger.error(f"LLM secret word extraction failed: {e}")
-        return None
-
-
 # ---------- Генерация и отправка откликов для всех аккаунтов ----------
 @celery_app.task
 def generate_and_send_responses():
+    """Генерирует и отправляет отклики для всех активных аккаунтов в рабочее время."""
+    logger.info("Starting generate_and_send_responses task")
     run_async(_generate_and_send_responses())
 
 
@@ -154,14 +149,20 @@ async def _generate_and_send_responses():
     async with get_db_session()() as session:
         accounts = await session.execute(select(Account).where(Account.is_active == True))
         accounts = accounts.scalars().all()
+        logger.info(f"Processing responses for {len(accounts)} accounts")
 
         for account in accounts:
             if not is_working_hours(account):
+                logger.debug(f"Account {account.id} is outside working hours, skipping")
                 continue
+
+            # Сброс лимита, если новый день
             await _reset_daily_limit_if_needed(account, session)
 
             remaining = account.daily_response_limit - account.responses_today
             if remaining <= 0:
+                logger.info(
+                    f"Account {account.id} has reached daily limit ({account.responses_today}/{account.daily_response_limit})")
                 continue
 
             # Выбираем вакансии, на которые ещё нет связи AccountVacancy (не просмотрены)
@@ -169,6 +170,8 @@ async def _generate_and_send_responses():
             stmt = select(Vacancy).where(Vacancy.id.not_in(subq)).order_by(func.random()).limit(remaining)
             vacancies = await session.execute(stmt)
             vacancies = vacancies.scalars().all()
+            logger.info(f"Account {account.id}: found {len(vacancies)} new vacancies to respond")
+
             if not vacancies:
                 continue
 
@@ -177,6 +180,7 @@ async def _generate_and_send_responses():
                 if auth_failed:
                     break
 
+                # Создаём запись о просмотре
                 account_vacancy = AccountVacancy(
                     account_id=account.id,
                     vacancy_id=vacancy.id,
@@ -190,14 +194,15 @@ async def _generate_and_send_responses():
                     letter = await generate_cover_letter(
                         vacancy_title=vacancy.title,
                         vacancy_description=vacancy.description,
-                        company="Компания",
+                        company="Компания",  # TODO: парсить компанию отдельно
                         resume_text=account.resume_text,
                         secret_word=vacancy.check_word,
                         system_prompt=account.system_prompt,
                         tg_username=account.telegram_username
                     )
+                    logger.info(f"Generated letter for vacancy {vacancy.id} (length: {len(letter)})")
                 except Exception as e:
-                    logger.error(f"Failed to generate letter for vacancy {vacancy.id}: {e}")
+                    logger.error(f"Failed to generate letter for vacancy {vacancy.id}: {e}", exc_info=True)
                     await session.delete(account_vacancy)
                     await session.commit()
                     continue
@@ -224,12 +229,13 @@ async def _generate_and_send_responses():
                     if success:
                         response.status = "sent"
                         response.sent_at = datetime.utcnow()
-                        logger.info(f"Response {response.id} sent for account {account.id}")
+                        logger.info(f"Response {response.id} sent successfully for account {account.id}")
                     else:
                         response.status = "error"
                         response.error_message = "send_response returned False"
+                        logger.error(f"send_response returned False for response {response.id}")
                 except Exception as e:
-                    logger.error(f"Failed to send response {response.id}: {e}")
+                    logger.error(f"Exception while sending response {response.id}: {e}", exc_info=True)
                     response.status = "error"
                     response.error_message = str(e)
                     await send_telegram_message(
@@ -247,22 +253,24 @@ async def _generate_and_send_responses():
                     logger.info(f"Account {account.id}: waiting {delay} seconds before next response")
                     await asyncio.sleep(delay)
 
-            logger.info(f"Account {account.id}: generated {account.responses_today} responses today.")
+            logger.info(f"Account {account.id}: sent {account.responses_today} responses today.")
 
 
-async def _reset_daily_limit_if_needed(account: Account, session: AsyncSession):
+async def _reset_daily_limit_if_needed(account: Account, session):
     today = date.today()
     if account.last_reset_date < today:
         account.responses_today = 0
         account.daily_response_limit = random.randint(account.daily_limit_min, account.daily_limit_max)
         account.last_reset_date = today
         await session.commit()
-        logger.info(f"Account {account.id} new daily limit: {account.daily_response_limit}")
+        logger.info(f"Account {account.id} daily limit reset to {account.daily_response_limit}")
 
 
 # ---------- Отдельная задача для сброса лимитов ----------
 @celery_app.task
 def reset_daily_limits():
+    """Сбрасывает daily лимиты для всех аккаунтов (вызывается раз в сутки)."""
+    logger.info("Starting reset_daily_limits task")
     run_async(_reset_daily_limits())
 
 
@@ -275,16 +283,11 @@ async def _reset_daily_limits():
     logger.info("Daily limits reset for all accounts.")
 
 
-# ---------- Вспомогательная функция для отправки сообщений в Telegram ----------
-async def send_telegram_message(chat_id: int, text: str):
-    url = f"https://api.telegram.org/bot{settings.BOT_TOKEN}/sendMessage"
-    async with aiohttp.ClientSession() as session:
-        await session.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"})
-
-
 # ---------- Тестовый запуск для аккаунта ----------
 @celery_app.task
 def run_test_for_account(account_id: int, chat_id: int):
+    """Запускает тестовую генерацию для указанного аккаунта и отправляет отчёт в чат."""
+    logger.info(f"Starting test for account {account_id}, chat {chat_id}")
     run_async(_run_test_for_account(account_id, chat_id))
 
 
@@ -293,6 +296,7 @@ async def _run_test_for_account(account_id: int, chat_id: int):
         account = await session.get(Account, account_id)
         if not account:
             await send_telegram_message(chat_id, "❌ Аккаунт не найден.")
+            logger.error(f"Account {account_id} not found for test")
             return
 
         # Выбираем случайные вакансии, на которые у аккаунта ещё нет связи (не просмотрены)
@@ -303,6 +307,7 @@ async def _run_test_for_account(account_id: int, chat_id: int):
 
         if not vacancies:
             await send_telegram_message(chat_id, "❌ Нет новых вакансий для теста.")
+            logger.warning(f"No new vacancies for account {account_id} test")
             return
 
         report = [f"<b>Тестовый запуск для аккаунта {account.username}</b>"]
@@ -313,6 +318,8 @@ async def _run_test_for_account(account_id: int, chat_id: int):
 
         for i, vacancy in enumerate(vacancies, 1):
             try:
+                # Если парсинг включён, можно спарсить заново (но у нас уже есть описание)
+                # Здесь просто генерируем письмо
                 letter = await generate_cover_letter(
                     vacancy_title=vacancy.title,
                     vacancy_description=vacancy.description,
@@ -322,16 +329,24 @@ async def _run_test_for_account(account_id: int, chat_id: int):
                     system_prompt=account.system_prompt,
                     tg_username=account.telegram_username
                 )
+
+                # Проверка на пустое письмо (дополнительная)
+                if not letter or len(letter.strip()) < 10:
+                    raise ValueError("Сгенерированное письмо слишком короткое или пустое")
+
                 report.append(f"<b>Тест {i}: {vacancy.title}</b>")
                 report.append(f"🔗 {vacancy.url}")
                 report.append(f"📝 <b>Письмо:</b>\n{letter}\n")
+                logger.info(f"Test for account {account_id}, vacancy {vacancy.id}: letter generated successfully")
             except Exception as e:
-                report.append(f"❌ Ошибка при генерации письма для {vacancy.title}: {e}")
+                error_msg = f"❌ Ошибка при генерации письма для {vacancy.title}: {e}"
+                report.append(error_msg)
+                logger.error(f"Test error for account {account_id}, vacancy {vacancy.id}: {e}", exc_info=True)
 
         full_text = "\n".join(report)
         if len(full_text) > 4000:
             for i in range(0, len(full_text), 4000):
-                await send_telegram_message(chat_id, full_text[i:i+4000])
+                await send_telegram_message(chat_id, full_text[i:i + 4000])
         else:
             await send_telegram_message(chat_id, full_text)
 
@@ -339,6 +354,8 @@ async def _run_test_for_account(account_id: int, chat_id: int):
 # ---------- Парсинг новых вакансий для конкретного аккаунта ----------
 @celery_app.task
 def parse_new_vacancies_for_account(account_id: int):
+    """Парсит вакансии для конкретного аккаунта по его фильтру."""
+    logger.info(f"Starting parse_new_vacancies_for_account for account {account_id}")
     run_async(_parse_new_vacancies_for_account(account_id))
 
 
@@ -346,45 +363,44 @@ async def _parse_new_vacancies_for_account(account_id: int):
     async with get_db_session()() as session:
         account = await session.get(Account, account_id)
         if not account or not account.is_active:
+            logger.warning(f"Account {account_id} not found or inactive")
             return
 
-        search_filter = account.search_filter
+        search_filter = account.search_filter or {}
         if not search_filter.get("url"):
             logger.warning(f"Account {account_id} has no search filter")
             return
 
-        proxy = get_proxy_for_account(account_id)
-        parser = HHParser(account_id=account_id, proxy=proxy)
-
+        searcher = HHSearcher(account_id=account_id, proxy=get_proxy_for_account(account_id))
         try:
-            vacancies = await parser.search_vacancies(
+            vacancies = await searcher.search(
                 search_url=search_filter["url"],
                 max_pages=search_filter.get("max_pages", 1)
             )
+            logger.info(f"Account {account_id}: found {len(vacancies)} vacancies on search pages")
         except Exception as e:
-            logger.error(f"Error parsing vacancies for account {account_id}: {e}")
+            logger.error(f"Error searching vacancies for account {account_id}: {e}", exc_info=True)
             return
 
         for vac_data in vacancies:
             if not vac_data.get("id"):
                 continue
 
+            # Проверяем, есть ли уже вакансия в БД
             existing_vac = await session.execute(
                 select(Vacancy).where(Vacancy.hh_id == vac_data["id"])
             )
             vacancy = existing_vac.scalar_one_or_none()
 
             if not vacancy:
-                try:
-                    details = await parser.parse_vacancy_details(vac_data["link"])
-                    if "error" in details:
-                        logger.error(f"Error parsing details for {vac_data['link']}: {details['error']}")
-                        continue
-                except Exception as e:
-                    logger.error(f"Error parsing details for {vac_data['link']}: {e}")
+                parser = HHDetailParser(proxy=get_proxy_for_account(0))
+                details = await parser.parse(vac_data["link"])
+                if "error" in details:
+                    logger.error(f"Error parsing details for {vac_data['link']}: {details['error']}")
                     continue
 
                 if not is_backend_python_keywords(vac_data["title"], details.get("description", "")):
+                    logger.info(f"Vacancy {vac_data['title']} does not match backend Python, skipping")
                     continue
 
                 new_vac = Vacancy(

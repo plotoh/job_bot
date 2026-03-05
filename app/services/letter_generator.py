@@ -1,7 +1,10 @@
 import asyncio
+import logging
 from typing import Optional
 import ollama
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_SYSTEM_PROMPT = """
 Ты — опытный карьерный консультант. Твоя задача — написать персонализированное сопроводительное письмо от имени соискателя на конкретную вакансию.
@@ -25,6 +28,12 @@ DEFAULT_SYSTEM_PROMPT = """
 - telegram username: {tg_username}
 """
 
+FALLBACK_TEMPLATE = """
+Здравствуйте! Меня заинтересовала вакансия {vacancy_title}. Мой опыт и навыки соответствуют вашим требованиям. 
+{tg_part}
+Буду рад обсудить детали.
+"""
+
 
 async def generate_cover_letter(
         vacancy_title: str,
@@ -35,29 +44,38 @@ async def generate_cover_letter(
         system_prompt: Optional[str] = None,
         tg_username: Optional[str] = None
 ) -> str:
-    if not system_prompt:
-        system_prompt = DEFAULT_SYSTEM_PROMPT
-    # Форматируем промпт с подстановкой данных
-    system_prompt = system_prompt.format(
-        vacancy_title=vacancy_title,
-        company=company,
-        vacancy_description=vacancy_description,
-        resume_text=resume_text,
-        secret_word=secret_word or "нет",
-        tg_username=tg_username or "не указан"
-    )
+    try:
+        if not system_prompt:
+            system_prompt = DEFAULT_SYSTEM_PROMPT
 
-    # Используем клиент с указанием хоста (из settings)
-    client = ollama.Client(host=settings.OLLAMA_BASE_URL)
-    loop = asyncio.get_event_loop()
-    response = await loop.run_in_executor(
-        None,
-        lambda: client.chat(
-            model=settings.OLLAMA_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-            ], #                 {"role": "user", "content": system_prompt}
-            options={"temperature": 0.6, "num_predict": 500}
+        system_prompt = system_prompt.format(
+            vacancy_title=vacancy_title,
+            company=company,
+            vacancy_description=vacancy_description,
+            resume_text=resume_text,
+            secret_word=secret_word or "нет",
+            tg_username=tg_username or "не указан"
         )
-    )
-    return response["message"]["content"].strip()
+
+        client = ollama.Client(host=settings.OLLAMA_BASE_URL)
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None,
+            lambda: client.chat(
+                model=settings.OLLAMA_MODEL,
+                messages=[{"role": "system", "content": system_prompt}],
+                options={"temperature": 0.6, "num_predict": 500}
+            )
+        )
+        letter = response["message"]["content"].strip()
+        if not letter:
+            raise ValueError("LLM вернул пустой ответ")
+        return letter
+    except Exception as e:
+        logger.error(f"Ошибка генерации письма: {e}", exc_info=True)
+        tg_part = f"Мой Telegram: {tg_username}" if tg_username else ""
+        return FALLBACK_TEMPLATE.format(
+            vacancy_title=vacancy_title,
+            company=company,
+            tg_part=tg_part
+        ).strip()

@@ -1,20 +1,23 @@
-import asyncio
+# app/handlers/vacancy.py
+import logging
 from aiogram import types, F, Router
 from aiogram.types import ForceReply
 from sqlalchemy import select
 
 from app.database.models import AsyncSessionLocal, Account, Vacancy
-from app.services.hh_parser import HHParser
+from app.services.vacancy_parser import HHDetailParser
 from app.services.vacancy_filter import extract_secret_word, is_backend_python_keywords
 from app.services.letter_generator import generate_cover_letter
 from app.utils.proxy_rotator import get_proxy_for_account
 from app.keyboards.reply import get_main_keyboard
 
+logger = logging.getLogger(__name__)
 router = Router()
 
 
 @router.message(F.text == "🔍 Парсинг вакансий по фильтру")
 async def parse_vacancies(message: types.Message):
+    """Запускает задачу парсинга для аккаунта пользователя."""
     telegram_id = message.from_user.id
     async with AsyncSessionLocal() as session:
         account = await session.get(Account, telegram_id)
@@ -67,13 +70,14 @@ async def handle_vacancy_link(message: types.Message):
 
     if not vacancy:
         proxy = get_proxy_for_account(account.id)
-        parser = HHParser(account_id=account.id, proxy=proxy)
+        parser = HHDetailParser(proxy=proxy)
         try:
-            details = await parser.parse_vacancy_details(vacancy_url)
+            details = await parser.parse(vacancy_url)
             if "error" in details:
                 await message.answer(f"❌ Ошибка парсинга: {details['error']}")
                 return
         except Exception as e:
+            logger.error(f"Error parsing vacancy {vacancy_url}: {e}", exc_info=True)
             await message.answer(f"❌ Ошибка: {e}")
             return
 
@@ -99,9 +103,12 @@ async def handle_vacancy_link(message: types.Message):
             vacancy_description=vacancy.description,
             company="Компания",
             resume_text=account.resume_text,
-            secret_word=vacancy.check_word
+            secret_word=vacancy.check_word,
+            system_prompt=account.system_prompt,
+            tg_username=account.telegram_username
         )
     except Exception as e:
+        logger.error(f"Error generating letter: {e}", exc_info=True)
         await message.answer(f"❌ Ошибка генерации письма: {e}")
         return
 

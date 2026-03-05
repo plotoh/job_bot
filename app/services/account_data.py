@@ -1,6 +1,7 @@
 import json
 from typing import Dict, Any
 from app.database.models import Account
+from app.utils.encryption import decrypt_password
 
 
 def format_account_data(account: Account) -> Dict[str, Any]:
@@ -68,6 +69,10 @@ def format_admin_account_text(account: Account) -> str:
                                    indent=2) if account.search_filter else "не задан"
     proxy_str = account.proxy if account.proxy else "не используется"
     prompt_preview = "стандартный"
+    decrypted_password = "не установлен"
+
+    if account.password_encrypted:
+        decrypted_password = decrypt_password(account.password_encrypted)
     if account.system_prompt:
         prompt_preview = account.system_prompt[:100] + "..." if len(
             account.system_prompt) > 100 else account.system_prompt
@@ -75,8 +80,8 @@ def format_admin_account_text(account: Account) -> str:
     text = (
         f"👤 <b>Аккаунт пользователя</b>\n\n"
         f"🆔 ID: <code>{account.id}</code>\n"
-        f"🔑 Логин hh: <code>{account.username}</code>\n"        
-        f"🔑 TG: <code>{account.telegram_username}</code>\n"
+        f"🔑 Логин hh: <code>{account.username}</code>\n"
+        f"🔑 Пароль hh: <span class=\"tg-spoiler\">{decrypted_password}</span>\n"
         f"📄 Резюме:\n<code>{resume_full}</code>\n\n"
         f"🤖 <b>Системный промпт:</b> <code>{prompt_preview}</code>\n\n"
         f"🔎 Фильтр поиска:\n<pre>{search_filter_str}</pre>\n"

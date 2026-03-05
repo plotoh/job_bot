@@ -1,10 +1,10 @@
+# app/handlers/data.py
 from aiogram import types, F, Router
 from app.services.account import get_account
 from app.services.account_data import format_account_text
 from app.keyboards.reply import get_main_keyboard
 
 router = Router()
-
 
 @router.message(F.text == "📋 Все данные")
 async def show_all_data(message: types.Message):

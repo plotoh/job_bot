@@ -1,3 +1,4 @@
+# app/handlers/stats.py
 from aiogram import types, F, Router
 from sqlalchemy import select, func, and_
 from datetime import date
