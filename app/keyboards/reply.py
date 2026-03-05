@@ -8,6 +8,7 @@ def get_main_keyboard(user_id: int = None) -> ReplyKeyboardMarkup:
         keyboard = [
             [KeyboardButton(text="👑 Админ-панель")],
             [KeyboardButton(text="🔍 Парсинг вакансий по фильтру")],
+            [KeyboardButton(text="📖 Инструкция")],
         ]
     else:
         # Для обычного пользователя все кнопки
@@ -18,6 +19,7 @@ def get_main_keyboard(user_id: int = None) -> ReplyKeyboardMarkup:
             [KeyboardButton(text="📋 Все данные")],
             [KeyboardButton(text="🧪 Тестовый режим")],
             [KeyboardButton(text="⚙️ Настройки аккаунта")],
+            [KeyboardButton(text="📖 Инструкция")],
         ]
 
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)

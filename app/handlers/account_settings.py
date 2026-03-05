@@ -4,7 +4,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ForceReply
 
 from app.fsm.states import UserSettingsStates
-from app.services.account import (
+from app.services.account_crud import (
     update_account_telegram_username,
     update_account_credentials,
     update_account_resume,

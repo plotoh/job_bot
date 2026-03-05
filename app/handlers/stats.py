@@ -5,7 +5,7 @@ from datetime import date
 
 from app.database.models import AsyncSessionLocal, Account, Response, Invitation
 from app.keyboards.reply import get_main_keyboard
-from app.services.account import get_account
+from app.services.account_crud import get_account
 from app.services.account_data import format_account_text
 
 router = Router()

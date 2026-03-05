@@ -1,21 +1,14 @@
+# app/services/letter_generator.py
 import random
 import re
 from typing import Optional
 
-DEFAULT_TEMPLATE = """
-{secret_word_phrase}
-{Здравствуйте|Добрый день}! {Прошу рассмотреть мою кандидатуру на|Откликаюсь на|откликаюсь на вакансию|Прошу рассмотреть мой отклик на вакансию|Меня заинтересовала вакансия} {vacancy_name}.
-{Мои опыт и навыки подходят|Под требования подхожу|Соответствую требованиям|Опыт и навыки удовлетворяют ваш запрос|Мой опыт и навыки соответствуют вашим требованиям}. 
-{Хорошего рабочего дня!|Надеюсь на ответ.|Буду рад обсудить детали.|Буду рад обсудить детали на собеседовании}
-{Мой телеграм|tg|Telegram}: {tg_username}
-"""
+from app.database.models import Account, Vacancy
+from app.config import settings
 
 
 def rand_text(text: str) -> str:
-    """
-    Заменяет конструкции {вариант1|вариант2} на случайный вариант.
-    Может быть вложенным.
-    """
+    """Заменяет {вариант1|вариант2} на случайный вариант."""
     while True:
         match = re.search(r'{([^{}]+)}', text)
         if not match:
@@ -27,41 +20,27 @@ def rand_text(text: str) -> str:
 
 
 async def generate_cover_letter(
-        vacancy_title: str,
-        vacancy_description: str,
-        company: str,  # не используется
-        resume_text: str,
-        secret_word: Optional[str] = None,
-        system_prompt: Optional[str] = None,  # не используется
-        tg_username: Optional[str] = None,
-        template: Optional[str] = None
+    account: Account,
+    vacancy: Vacancy,
+    secret_word: Optional[str] = None,
 ) -> str:
     """
-    Генерирует сопроводительное письмо по шаблону.
-    Если template не задан, используется DEFAULT_TEMPLATE.
-    Поддерживаются переменные:
-        {vacancy_name}, {secret_word_phrase}, {tg_username}
+    Генерирует сопроводительное письмо на основе шаблона аккаунта.
     """
+    template = account.letter_template
     if not template:
-        template = DEFAULT_TEMPLATE
+        template = settings.DEFAULT_LETTER_TEMPLATE
 
-    # Подготовка фразы про проверочное слово
-    if secret_word:
-        secret_word_phrase = f"Проверочное слово: {secret_word}"
-    else:
-        secret_word_phrase = ""
+    secret_word_phrase = f"Проверочное слово: {secret_word}" if secret_word else ""
 
-    # Подстановка переменных
-    letter = template.replace("{vacancy_name}", vacancy_title)
+    letter = template.replace("{vacancy_name}", vacancy.title)
     letter = letter.replace("{secret_word_phrase}", secret_word_phrase)
-    letter = letter.replace("{tg_username}", tg_username if tg_username else "")
+    letter = letter.replace("{tg_username}", account.telegram_username or "")
 
-    # Обработка случайного выбора
     letter = rand_text(letter)
 
-    # Если tg_username пустой, удаляем строку, содержащую упоминание Telegram
-    if not tg_username:
-        # Удаляем строки, где есть "Мой телеграм", "tg" или "Telegram" и двоеточие, после которого только пробелы или ничего
+    if not account.telegram_username:
+        # Удаляем строки с упоминанием Telegram
         lines = letter.split('\n')
         filtered_lines = []
         for line in lines:
@@ -70,6 +49,5 @@ async def generate_cover_letter(
             filtered_lines.append(line)
         letter = '\n'.join(filtered_lines)
 
-    # Очистка от лишних пробелов и переносов
     letter = re.sub(r'\n\s*\n', '\n\n', letter).strip()
     return letter

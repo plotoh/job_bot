@@ -5,7 +5,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
 from app.fsm.states import UserTestStates
-from app.services.account import get_account, update_test_flags, update_test_count
+from app.services.account_crud import get_account, update_test_flags, update_test_count
 from app.worker.tasks import run_test_for_account
 from app.keyboards.reply import get_main_keyboard
 
@@ -104,10 +104,8 @@ async def back_from_test(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     is_admin = data.get("is_admin", False)
     if is_admin:
-        # Вернуться в меню аккаунта админа
         await callback.message.delete()
-        # Здесь нужно вызвать account_selected снова, но проще перейти в главное меню админа
-        from .admin_panel import admin_main_menu
+        from .admin.main import admin_main_menu   # <-- изменено
         await admin_main_menu(callback.message, state)
     else:
         await state.clear()

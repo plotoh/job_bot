@@ -1,11 +1,16 @@
-import random
+import logging
 from typing import Optional
 from datetime import date
+import random
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.database.models import AsyncSessionLocal, Account
 from app.utils.db import get_session  # мы создадим ниже
 from app.utils.encryption import encrypt_password
+
+logger = logging.getLogger(__name__)
 
 
 async def get_account(account_id: int) -> Optional[Account]:
@@ -182,5 +187,27 @@ async def update_account_max_pages(account_id: int, max_pages: int) -> bool:
         if not account:
             return False
         account.max_pages = max_pages
+        await session.commit()
+        return True
+
+
+async def reset_daily_limit_if_needed(account: Account, session: AsyncSession) -> bool:
+    today = date.today()
+    if account.last_reset_date < today:
+        account.responses_today = 0
+        account.daily_response_limit = random.randint(account.daily_limit_min, account.daily_limit_max)
+        account.last_reset_date = today
+        await session.commit()
+        logger.info("Account %d daily limit reset to %d", account.id, account.daily_response_limit)
+        return True
+    return False
+
+
+async def update_account_letter_template(account_id: int, template: str) -> bool:
+    async with AsyncSessionLocal() as session:
+        account = await session.get(Account, account_id)
+        if not account:
+            return False
+        account.letter_template = template
         await session.commit()
         return True

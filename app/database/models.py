@@ -31,6 +31,7 @@ class Account(Base):
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     telegram_username: Mapped[str] = mapped_column(String(100), nullable=True, default=None)
     cookies_updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    letter_template: Mapped[str] = mapped_column(Text, default=settings.DEFAULT_LETTER_TEMPLATE)
 
     daily_limit_min: Mapped[int] = mapped_column(Integer, default=53)
     daily_limit_max: Mapped[int] = mapped_column(Integer, default=137)
