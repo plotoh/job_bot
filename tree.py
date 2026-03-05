@@ -35,7 +35,7 @@ IGNORE_LIST = {
     "*.log",
     "*.tmp",
     "Thumbs.db",
-    "__init__.py",
+    # "__init__.py",
     "alembic/versions",
     "ansible",
     "redis/data",

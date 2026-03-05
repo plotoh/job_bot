@@ -8,6 +8,9 @@ from app.utils.db import get_session  # мы создадим ниже
 from app.utils.encryption import encrypt_password
 
 
+
+
+
 async def get_account(account_id: int) -> Optional[Account]:
     async with AsyncSessionLocal() as session:
         return await session.get(Account, account_id)

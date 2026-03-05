@@ -1,19 +1,51 @@
 import logging
 from aiogram import types, F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, ForceReply
+from aiogram.types import CallbackQuery
 from aiogram.filters import StateFilter
 
 from app.fsm.states import AdminEditStates
 from app.services.account import (
     update_account_filter, update_account_resume, update_account_proxy,
     update_account_limit, update_account_limit_range,
-    update_account_interval_range, update_account_work_hours
+    update_account_interval_range, update_account_work_hours,
+    update_account_prompt
 )
+from .accounts import show_account_menu
 from .main import admin_main_menu
+from ...database.models import AsyncSessionLocal, Account
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+
+@router.callback_query(StateFilter(AdminEditStates.choosing_action), F.data == "admin_edit_telegram_username")
+async def edit_telegram_username_start(callback: CallbackQuery, state: FSMContext):
+    logger.info(f"Admin {callback.from_user.id} started editing telegram username")
+    await callback.message.edit_text("Введите новый Telegram username (например, @username) или '-' чтобы удалить:")
+    await state.set_state(AdminEditStates.editing_telegram_username)
+    await callback.answer()
+
+
+@router.message(StateFilter(AdminEditStates.editing_telegram_username), F.text)
+async def edit_telegram_username_save(message: types.Message, state: FSMContext):
+    new_username = message.text.strip()
+    if new_username == "-":
+        new_username = None
+    data = await state.get_data()
+    account_id = data["account_id"]
+    async with AsyncSessionLocal() as session:
+        account = await session.get(Account, account_id)
+        if account:
+            account.telegram_username = new_username
+            await session.commit()
+            logger.info(f"Admin {message.from_user.id} updated telegram username for account {account_id}")
+            await message.answer("✅ Telegram username обновлён!")
+        else:
+            await message.answer("❌ Аккаунт не найден.")
+    # Возвращаемся в меню аккаунта
+    from .accounts import show_account_menu
+    await show_account_menu(message, account_id, state)
 
 
 # ----- Фильтр -----
@@ -34,9 +66,10 @@ async def edit_filter_save(message: types.Message, state: FSMContext):
     if success:
         logger.info(f"Admin {message.from_user.id} updated filter for account {account_id} to {new_url}")
         await message.answer("✅ Фильтр обновлён!")
+        await show_account_menu(message, account_id, state)
     else:
         await message.answer("❌ Аккаунт не найден.")
-    await admin_main_menu(message, state)
+        await admin_main_menu(message, state)
 
 
 # ----- Резюме -----
@@ -57,9 +90,10 @@ async def edit_resume_save(message: types.Message, state: FSMContext):
     if success:
         logger.info(f"Admin {message.from_user.id} updated resume for account {account_id}")
         await message.answer("✅ Резюме обновлено!")
+        await show_account_menu(message, account_id, state)
     else:
         await message.answer("❌ Аккаунт не найден.")
-    await admin_main_menu(message, state)
+        await admin_main_menu(message, state)
 
 
 # ----- Прокси -----
@@ -83,9 +117,10 @@ async def edit_proxy_save(message: types.Message, state: FSMContext):
     if success:
         logger.info(f"Admin {message.from_user.id} updated proxy for account {account_id}")
         await message.answer("✅ Прокси обновлён!" if new_proxy else "✅ Прокси удалён.")
+        await show_account_menu(message, account_id, state)
     else:
         await message.answer("❌ Аккаунт не найден.")
-    await admin_main_menu(message, state)
+        await admin_main_menu(message, state)
 
 
 # ----- Текущий лимит -----
@@ -110,9 +145,10 @@ async def edit_limit_save(message: types.Message, state: FSMContext):
     if success:
         logger.info(f"Admin {message.from_user.id} set daily limit to {new_limit} for account {account_id}")
         await message.answer("✅ Лимит обновлён!")
+        await show_account_menu(message, account_id, state)
     else:
         await message.answer("❌ Аккаунт не найден.")
-    await admin_main_menu(message, state)
+        await admin_main_menu(message, state)
 
 
 # ----- Диапазон лимита -----
@@ -144,9 +180,10 @@ async def edit_limit_range_save(message: types.Message, state: FSMContext):
     if success:
         logger.info(f"Admin {message.from_user.id} updated limit range for account {account_id}")
         await message.answer("✅ Диапазон лимита обновлён!")
+        await show_account_menu(message, account_id, state)
     else:
         await message.answer("❌ Аккаунт не найден.")
-    await admin_main_menu(message, state)
+        await admin_main_menu(message, state)
 
 
 # ----- Интервал отклика -----
@@ -179,9 +216,10 @@ async def edit_interval_save(message: types.Message, state: FSMContext):
     if success:
         logger.info(f"Admin {message.from_user.id} updated interval range for account {account_id}")
         await message.answer("✅ Интервал откликов обновлён!")
+        await show_account_menu(message, account_id, state)
     else:
         await message.answer("❌ Аккаунт не найден.")
-    await admin_main_menu(message, state)
+        await admin_main_menu(message, state)
 
 
 # ----- Рабочие часы -----
@@ -214,6 +252,34 @@ async def edit_work_hours_save(message: types.Message, state: FSMContext):
     if success:
         logger.info(f"Admin {message.from_user.id} updated work hours for account {account_id}")
         await message.answer("✅ Рабочие часы обновлены!")
+        await show_account_menu(message, account_id, state)
     else:
         await message.answer("❌ Аккаунт не найден.")
-    await admin_main_menu(message, state)
+        await admin_main_menu(message, state)
+
+
+# ----- Системный промпт -----
+@router.callback_query(StateFilter(AdminEditStates.choosing_action), F.data == "admin_edit_prompt")
+async def edit_prompt_start(callback: CallbackQuery, state: FSMContext):
+    logger.info(f"Admin {callback.from_user.id} started editing system prompt")
+    await callback.message.edit_text(
+        "Введите новый системный промпт (можно использовать Markdown). Отправьте '-' чтобы сбросить к стандартному.")
+    await state.set_state(AdminEditStates.editing_prompt)
+    await callback.answer()
+
+
+@router.message(StateFilter(AdminEditStates.editing_prompt), F.text)
+async def edit_prompt_save(message: types.Message, state: FSMContext):
+    new_prompt = message.text.strip()
+    if new_prompt == "-":
+        new_prompt = None
+    data = await state.get_data()
+    account_id = data["account_id"]
+    success = await update_account_prompt(account_id, new_prompt)
+    if success:
+        logger.info(f"Admin {message.from_user.id} updated system prompt for account {account_id}")
+        await message.answer("✅ Системный промпт обновлён!")
+        await show_account_menu(message, account_id, state)
+    else:
+        await message.answer("❌ Аккаунт не найден.")
+        await admin_main_menu(message, state)

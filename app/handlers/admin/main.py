@@ -2,10 +2,11 @@ import logging
 from aiogram import types, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
 from app.config import settings
 from app.fsm.states import AdminEditStates
+from app.handlers.admin.vacancies import show_vacancies_page
 from app.services.account import get_all_accounts
 from app.keyboards.reply import get_main_keyboard
 
@@ -25,6 +26,7 @@ async def admin_main_menu(message: types.Message, state: FSMContext):
 
     # Кнопки действий
     action_buttons = [
+        [InlineKeyboardButton(text="📋 Все вакансии", callback_data="admin_list_vacancies")],
         [InlineKeyboardButton(text="➕ Добавить аккаунт", callback_data="admin_add_account")],
         [InlineKeyboardButton(text="📊 Общая статистика", callback_data="admin_global_stats")],
         [InlineKeyboardButton(text="🔄 Обновить список", callback_data="admin_refresh_list")],
@@ -46,6 +48,13 @@ async def admin_main_menu(message: types.Message, state: FSMContext):
     keyboard = InlineKeyboardMarkup(inline_keyboard=action_buttons + account_buttons + close_button)
     await message.answer("👑 Админ-панель\nВыберите действие или аккаунт:", reply_markup=keyboard)
     await state.set_state(AdminEditStates.choosing_account)
+
+
+@router.callback_query(F.data == "admin_list_vacancies")
+async def admin_list_vacancies(callback: CallbackQuery):
+    logger.info(f"Admin {callback.from_user.id} requested vacancies list")
+    await show_vacancies_page(callback.message, 0)
+    await callback.answer()
 
 
 @router.message(Command("admin"), is_admin)

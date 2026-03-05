@@ -120,8 +120,7 @@ async def run_test(callback: CallbackQuery, state: FSMContext):
     count = (await get_account(account_id)).test_count  # получаем количество
 
     await callback.message.edit_text("🚀 Запускаю тестовую генерацию... Это может занять некоторое время.")
-    from app.worker.tasks import run_test_generation
-    run_test_generation.delay(account_id, chat_id, count)
+    run_test_for_account.delay(account_id, chat_id)
     await state.clear()
     await callback.answer("Тест запущен. Результат придёт в этот чат.")
 

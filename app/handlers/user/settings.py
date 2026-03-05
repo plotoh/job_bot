@@ -3,6 +3,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup, ForceReply
 
+from app.database.models import Account, AsyncSessionLocal
 from app.fsm.states import UserSettingsStates
 from app.services.account import (
     get_account,
@@ -19,6 +20,7 @@ router = Router()
 
 async def show_settings_menu(message: types.Message, state: FSMContext):
     kb = ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="📱 Telegram username")],
         [KeyboardButton(text="🔑 Логин/пароль hh")],
         [KeyboardButton(text="📄 Текст резюме")],
         [KeyboardButton(text="🔎 Фильтр поиска (URL)")],
@@ -27,6 +29,29 @@ async def show_settings_menu(message: types.Message, state: FSMContext):
     ], resize_keyboard=True)
     await message.answer("Выберите, что хотите изменить:", reply_markup=kb)
     await state.set_state(UserSettingsStates.choosing_field)
+
+
+@router.message(UserSettingsStates.choosing_field, F.text == "📱 Telegram username")
+async def edit_telegram_username_start(message: types.Message, state: FSMContext):
+    await message.answer("Введите ваш Telegram username (например, @username) или отправьте '-' чтобы удалить:",
+                         reply_markup=ForceReply())
+    await state.set_state(UserSettingsStates.waiting_telegram_username)
+
+
+@router.message(UserSettingsStates.waiting_telegram_username, F.text)
+async def edit_telegram_username_save(message: types.Message, state: FSMContext):
+    new_username = message.text.strip()
+    if new_username == "-":
+        new_username = None
+    async with AsyncSessionLocal() as session:
+        account = await session.get(Account, message.from_user.id)
+        if account:
+            account.telegram_username = new_username
+            await session.commit()
+            await message.answer("✅ Telegram username обновлён!")
+        else:
+            await message.answer("❌ Аккаунт не найден.")
+    await show_settings_menu(message, state)
 
 
 @router.message(F.text == "⚙️ Настройки аккаунта")

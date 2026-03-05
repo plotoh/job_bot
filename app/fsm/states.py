@@ -3,6 +3,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 # Состояния для администратора
 class AdminEditStates(StatesGroup):
+    editing_telegram_username = State()
     choosing_account = State()
     choosing_action = State()
     editing_filter = State()
@@ -33,6 +34,7 @@ class UserSettingsStates(StatesGroup):
     waiting_proxy = State()
     waiting_resume = State()
     waiting_filter = State()
+    waiting_telegram_username = State()
 
 
 class UserTestStates(StatesGroup):

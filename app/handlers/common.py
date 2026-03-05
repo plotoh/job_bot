@@ -9,11 +9,13 @@ router = Router()
 
 @router.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
+    uid = message.from_user.id
+    # reply = get_main_keyboard(message.from_user.id) if uid != settings.ADMIN_ID else
     await state.clear()
     await message.answer(
         "Привет! Я бот для работы с HeadHunter.\n"
         "Выберите действие на клавиатуре ниже:",
-        reply_markup=get_main_keyboard(message.from_user.id)
+        reply_markup=get_main_keyboard(uid)
     )
 
 

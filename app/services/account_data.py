@@ -75,7 +75,8 @@ def format_admin_account_text(account: Account) -> str:
     text = (
         f"👤 <b>Аккаунт пользователя</b>\n\n"
         f"🆔 ID: <code>{account.id}</code>\n"
-        f"🔑 Логин hh: <code>{account.username}</code>\n"
+        f"🔑 Логин hh: <code>{account.username}</code>\n"        
+        f"🔑 TG: <code>{account.telegram_username}</code>\n"
         f"📄 Резюме:\n<code>{resume_full}</code>\n\n"
         f"🤖 <b>Системный промпт:</b> <code>{prompt_preview}</code>\n\n"
         f"🔎 Фильтр поиска:\n<pre>{search_filter_str}</pre>\n"

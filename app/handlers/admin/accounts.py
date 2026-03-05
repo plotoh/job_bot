@@ -15,19 +15,14 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
-@router.callback_query(StateFilter(AdminEditStates.choosing_account), F.data.startswith("admin_acc_"))
-async def account_selected(callback: CallbackQuery, state: FSMContext):
-    account_id = int(callback.data.split("_")[2])
-    logger.info(f"Admin {callback.from_user.id} selected account {account_id}")
-    await state.update_data(account_id=account_id)
-
+async def show_account_menu(update: types.Message | CallbackQuery, account_id: int, state: FSMContext):
+    """Показывает меню управления конкретным аккаунтом."""
     async with AsyncSessionLocal() as session:
         account = await session.get(Account, account_id)
 
-    # Формируем подробный текст
     text = format_admin_account_text(account)
-
     buttons = [
+        [InlineKeyboardButton(text="📱 Telegram username", callback_data="admin_edit_telegram_username")],
         [InlineKeyboardButton(text="🧪 Тестовый режим", callback_data="admin_test_mode")],
         [InlineKeyboardButton(text="🤖 Системный промпт", callback_data="admin_edit_prompt")],
         [InlineKeyboardButton(text="✏️ Изменить фильтр", callback_data="admin_edit_filter")],
@@ -42,21 +37,21 @@ async def account_selected(callback: CallbackQuery, state: FSMContext):
     ]
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    if isinstance(update, CallbackQuery):
+        await update.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    else:
+        await update.answer(text, reply_markup=keyboard, parse_mode="HTML")
+
+    await state.update_data(account_id=account_id)
     await state.set_state(AdminEditStates.choosing_action)
+
+
+@router.callback_query(StateFilter(AdminEditStates.choosing_account), F.data.startswith("admin_acc_"))
+async def account_selected(callback: CallbackQuery, state: FSMContext):
+    account_id = int(callback.data.split("_")[2])
+    logger.info(f"Admin {callback.from_user.id} selected account {account_id}")
+    await show_account_menu(callback, account_id, state)
     await callback.answer()
-    # keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-    #
-    # await callback.message.edit_text(
-    #     f"Аккаунт: {account.username}\n"
-    #     f"ID: {account.id}\n"
-    #     f"Фильтр: {account.search_filter.get('url', 'не задан')}\n"
-    #     f"Лимит: {account.responses_today}/{account.daily_response_limit}\n"
-    #     f"Прокси: {account.proxy or 'не используется'}",
-    #     reply_markup=keyboard
-    # )
-    # await state.set_state(AdminEditStates.choosing_action)
-    # await callback.answer()
 
 
 @router.callback_query(F.data == "admin_back_to_main")
