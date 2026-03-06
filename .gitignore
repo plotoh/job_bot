@@ -48,6 +48,23 @@ venv.bak/
 # Logs
 *.log
 
+.coverage
+htmlcov/
 
-#poetry.lock
-#alembic/versions/
+# --- ДОБАВЛЕНО: Безопасность и отладка ---
+
+# Cookies и чувствительные данные (критично для безопасности)
+*cookies*.txt
+*.txt
+!README.txt
+!requirements.txt
+
+# Файлы отладки (HTML дампы, скрипты)
+scripts/debug_*.html
+*.html
+!templates/*.html
+
+# Временные файлы в scripts
+scripts/debug_*.py
+scripts/*.dump
+scripts/*.json

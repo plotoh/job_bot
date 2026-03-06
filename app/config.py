@@ -24,8 +24,8 @@ class Settings(BaseSettings):
     OLLAMA_MODEL: str = 'llama3.1:8b'
 
     PROXY_LIST_PATH: str = '/app/data/proxies.txt'  # файл с прокси (один на строку)
-    ENCRYPTION_KEY: str = Field(..., env='ENCRYPTION_KEY')  # для шифрования паролей
-    ADMIN_ID: int = Field(..., env='ADMIN_ID')  # единственный админ
+    ENCRYPTION_KEY: str = Field(..., validation_alias='ENCRYPTION_KEY')  # для шифрования паролей
+    ADMIN_ID: int = Field(..., validation_alias='ADMIN_ID')  # единственный админ
     LOG_LEVEL: str = 'INFO'
 
     # Периоды задач (в минутах)

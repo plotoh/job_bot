@@ -15,7 +15,7 @@ services:
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -29,7 +29,7 @@ services:
     ports:
       - "6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -40,7 +40,7 @@ services:
   bot:
     build: .
     container_name: job_bot_bot
-    command: sh -c "alembic upgrade head && python -m app.main"
+    command: sh -c "poetry run alembic upgrade head && poetry run python -m app.main"
     env_file:
       - .env
     depends_on:
@@ -59,7 +59,7 @@ services:
   worker:
     build: .
     container_name: job_bot_worker
-    command: celery -A app.worker.celery_app:celery_app worker --loglevel=info
+    command: poetry run celery -A app.worker.celery_app worker --loglevel=info
     env_file:
       - .env
     depends_on:
@@ -78,7 +78,7 @@ services:
   beat:
     build: .
     container_name: job_bot_beat
-    command: celery -A app.worker.celery_app:celery_app beat --loglevel=info
+    command: poetry run celery -A app.worker.celery_app beat --loglevel=info
     env_file:
       - .env
     depends_on:
@@ -91,16 +91,18 @@ services:
       - job_bot_network
     restart: unless-stopped
 
+  migration:
+    build: .
+    command: poetry run alembic upgrade head
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - job_bot_network
+    restart: "no"
+
 volumes:
   pg_data:
     name: job_bot_pg_data
-
-migration:
-  build: .
-  command: sh -c "alembic upgrade head"
-  env_file:
-    - .env
-  depends_on:
-    postgres:
-      condition: service_healthy
-  restart: "no"

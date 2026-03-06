@@ -1,6 +1,3 @@
-# hh_client/client.py
-"""Основной асинхронный клиент для работы с hh.ru."""
-
 import asyncio
 import json
 import logging
@@ -55,8 +52,6 @@ class HHClient:
         # Устанавливаем cookies
         for name, value in self._cookies.items():
             self._session.cookie_jar.update_cookies({name: value})
-        # Прокси (aiohttp поддерживает прокси на уровне запроса, а не сессии)
-        # Мы будем передавать proxy в каждый запрос
         logger.debug("HHClient session created with cookies: %s", list(self._cookies.keys()))
 
     async def close(self):
@@ -66,12 +61,12 @@ class HHClient:
             logger.debug("HHClient session closed")
 
     async def _request(
-        self,
-        method: str,
-        path: str,
-        params: Optional[Dict] = None,
-        data: Optional[Dict] = None,
-        headers: Optional[Dict] = None,
+            self,
+            method: str,
+            path: str,
+            params: Optional[Dict] = None,
+            data: Optional[Dict] = None,
+            headers: Optional[Dict] = None,
     ) -> str:
         """
         Выполняет HTTP-запрос и возвращает текст ответа.
@@ -88,13 +83,13 @@ class HHClient:
         try:
             logger.debug("Request: %s %s, params=%s", method, url, params)
             async with self._session.request(
-                method,
-                url,
-                params=params,
-                data=data,
-                headers=request_headers,
-                proxy=self._proxy,
-                timeout=aiohttp.ClientTimeout(total=30),
+                    method,
+                    url,
+                    params=params,
+                    data=data,
+                    headers=request_headers,
+                    proxy=self._proxy,
+                    timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
                 logger.debug("Response status: %d for %s", resp.status, url)
                 if resp.status == 401:
@@ -127,7 +122,7 @@ class HHClient:
         Возвращает список VacancyPreview.
         """
         parsed = urlparse(search_url)
-        base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+        path = parsed.path
         params = parse_qs(parsed.query)
         # Преобразуем значения из списков в строки (aiohttp может принимать списки, но для безопасности)
         params = {k: v[0] if v else "" for k, v in params.items()}
@@ -137,11 +132,16 @@ class HHClient:
         for page in range(max_pages):
             page_params = params.copy()
             page_params["page"] = str(page)
-            html = await self._request("GET", base_url, params=page_params)
+            html = await self._request("GET", path, params=page_params)
+            # Отладка: сохраним HTML в лог при уровне DEBUG
+            logger.info("Search page HTML (first 500 chars): %s", html[:500])
             try:
                 page_vacancies = extract_json_from_html(html, "vacancies")
-            except HHParseError:
-                logger.debug("No more vacancies at page %d", page)
+            except HHParseError as e:
+                logger.error("Failed to extract vacancies from page %d: %s", page, e)
+                with open(f"debug_page_{page}.html", "w", encoding="utf-8") as f:
+                    f.write(html)
+                logger.error("HTML snippet: %s", html[:5000])
                 break
             for raw in page_vacancies:
                 try:
@@ -180,10 +180,10 @@ class HHClient:
         return tests_data.get(str(vacancy_id), {})
 
     async def apply(
-        self,
-        vacancy_id: int,
-        resume_hash: str,
-        letter: str = "",
+            self,
+            vacancy_id: int,
+            resume_hash: str,
+            letter: str = "",
     ) -> ApplyResult:
         """
         Отправляет отклик на вакансию.

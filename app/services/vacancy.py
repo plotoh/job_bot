@@ -66,6 +66,7 @@ async def fetch_and_save_new_vacancies(account: Account, session: AsyncSession) 
             if not await client.is_logged_in():
                 logger.warning("Account %d cookies are invalid, skipping", account.id)
                 return 0
+            logger.info("Account %d cookies are valid", account.id)
             vacancies_preview = await client.search_vacancies(search_url, account.max_pages)
     except Exception as e:
         logger.error("Error searching vacancies for account %d: %s", account.id, e, exc_info=True)

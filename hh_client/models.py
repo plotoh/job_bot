@@ -2,7 +2,7 @@
 """Pydantic модели для структурирования ответов hh.ru."""
 
 from typing import Optional, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class Salary(BaseModel):
@@ -15,6 +15,8 @@ class Salary(BaseModel):
 
 class VacancyPreview(BaseModel):
     """Краткая информация о вакансии из списка поиска."""
+    model_config = ConfigDict(populate_by_name=True)
+
     id: int = Field(alias="vacancyId")
     title: str = Field(alias="name")
     url: Optional[str] = Field(None, alias="link")
@@ -22,9 +24,6 @@ class VacancyPreview(BaseModel):
     response_letter_required: bool = Field(alias="@responseLetterRequired")
     salary: Optional[Salary] = None
     employer: Optional[str] = None  # можно добавить, если понадобится
-
-    class Config:
-        populate_by_name = True
 
 
 class VacancyDetails(BaseModel):

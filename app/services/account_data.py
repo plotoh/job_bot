@@ -60,7 +60,6 @@ def format_account_text(account: Account) -> str:
 
 def format_admin_account_text(account: Account) -> str:
     """Возвращает форматированный текст для отображения администратору (без тестового блока)."""
-    max_pages = account.search_filter.get("max_pages", 1) if account.search_filter else 1
     resume_full = account.resume_text[:500] + "..." if len(account.resume_text) > 500 else account.resume_text
     search_filter_str = json.dumps(account.search_filter, ensure_ascii=False,
                                    indent=2) if account.search_filter else "не задан"
@@ -80,7 +79,7 @@ def format_admin_account_text(account: Account) -> str:
         f"🌐 Прокси: <code>{proxy_str}</code>\n\n"
         f"⚙️ <b>Лимиты и расписание</b>\n"        
         f"   • Отправлено сегодня: {account.responses_today} / {account.daily_response_limit}\n"
-        f"   • Макс. страниц для парсинга: {max_pages}\n"
+        f"   • Макс. страниц для парсинга: {account.max_pages}\n"
         f"   • Диапазон дневного лимита: {account.daily_limit_min}–{account.daily_limit_max} | текущий: {account.daily_response_limit}\n"
         f"   • Интервал откликов: {account.response_interval_min}–{account.response_interval_max} сек\n"
         f"   • Рабочие часы: {account.work_start_hour}:00 – {account.work_end_hour}:00\n"
