@@ -2,10 +2,11 @@
 # ruff: noqa: RUF001, RUF002, RUF003
 """
 tree.py - выводит дерево проекта и (опционально) содержимое всех файлов.
+Исключает: дебаг-файлы, *.txt, README, .env, логи, куки, coverage.
 
 Использование:
     python tree.py [путь]             # только дерево
-    python tree.py [путь] --full-content   # дерево + содержимое всех файлов (без ограничений)
+    python tree.py [путь] --full-content   # дерево + содержимое всех файлов
 
 Опции:
     --full-content   Показать содержимое всех файлов после дерева (без ограничения размера)
@@ -16,33 +17,73 @@ import sys
 from pathlib import Path
 from typing import List, Set
 
-# Список игнорируемых элементов (можно расширять)
+# Список игнорируемых элементов (расширенный для безопасности и чистоты)
 IGNORE_LIST = {
+    # Python cache & virtual environments
     "__pycache__",
     ".git",
     ".venv",
     "venv",
-    ".env",
-    ".env.local",
-    ".env.prod",
-    ".DS_Store",
+    "env",
     ".pytest_cache",
     ".mypy_cache",
     ".ruff_cache",
+    ".coverage",
+    "htmlcov",
+
+    # IDE & Editor
     ".vscode",
     ".idea",
-    "*.pyc",
+    "*.swp",
+    "*.swo",
+
+    # Environment & Secrets
+    ".env",
+    ".env.local",
+    ".env.prod",
+    ".env.example",
+    "*cookies*.txt",
+    "*.pem",
+    "*.key",
+
+    # Logs & Debug
     "*.log",
     "*.tmp",
+    "*.dump",
+    "debug_*.py",
+    "debug_*.html",
+    "*_debug.py",
+    "scripts/debug_*",
+
+    # Documentation (по запросу)
+    "README.md",
+    "README.rst",
+    "CHANGELOG.md",
+    "LICENSE",
+
+    # Database & Binary
+    "*.db",
+    "*.sqlite",
+    "*.sqlite3",
     "Thumbs.db",
-    # "__init__.py",
+
+    # Build & Deploy
+    "build/",
+    "dist/",
+    "eggs/",
+    "*.egg-info/",
     "alembic/versions",
-    "ansible",
-    "redis/data",
     "script.py.mako",
-    "terraform",
-    "tree.py",
     "uv.lock",
+    "poetry.lock",  # опционально, можно убрать если нужно
+
+    # Project specific
+    "tree.py",  # сам скрипт
+    "ansible",
+    "terraform",
+    "redis/data",
+    "postgres/data",
+    "pg_data",
 }
 
 # Расширения бинарных файлов, которые не читаем как текст
@@ -64,14 +105,22 @@ BINARY_EXTS = {
     ".so",
     ".dylib",
     ".bin",
-    ".sqlite",
-    ".db",
     ".pyc",
     ".pyo",
     ".pyd",
     ".whl",
     ".egg",
     ".lock",
+    ".db",
+    ".sqlite",
+    ".sqlite3",
+}
+
+# Расширения текстовых файлов, которые игнорируем (по запросу)
+TEXT_EXTS_TO_IGNORE = {
+    ".txt",
+    ".md",
+    ".rst",
 }
 
 
@@ -93,21 +142,36 @@ class IgnoreChecker:
 
     def should_ignore(self, rel_path: Path) -> bool:
         rel_str = str(rel_path).replace("\\", "/")
+        rel_name = rel_path.name
+
+        # Проверка по паттернам
         for ptype, pat in self.patterns:
-            if ptype == 'suffix' and rel_path.name.endswith(pat):
+            if ptype == 'suffix' and rel_name.endswith(pat):
                 return True
             if ptype == 'dir_prefix' and (rel_str == pat or rel_str.startswith(pat + "/")):
                 return True
-            if ptype == 'exact' and (rel_str == pat or rel_path.name == pat):
+            if ptype == 'exact' and (rel_str == pat or rel_name == pat):
                 return True
+
+        # Дополнительная проверка для debug-файлов в любом месте
+        if 'debug' in rel_name.lower():
+            return True
+
+        # Проверка для *.txt файлов (кроме исключений)
+        if rel_path.suffix.lower() == '.txt':
+            # Можно добавить исключения, если нужно
+            # if rel_name in ['requirements.txt', 'LICENSE.txt']:
+            #     return False
+            return True
+
         return False
 
 
 def walk_tree(
-    dir_path: Path,
-    ignore_checker: IgnoreChecker,
-    root: Path,
-    prefix: str = "",
+        dir_path: Path,
+        ignore_checker: IgnoreChecker,
+        root: Path,
+        prefix: str = "",
 ) -> List[str]:
     """Рекурсивно обходит дерево и возвращает список строк с его структурой."""
     lines = []
@@ -117,7 +181,7 @@ def walk_tree(
             try:
                 rel_path = p.relative_to(root)
             except ValueError:
-                rel_path = p.name
+                rel_path = Path(p.name)
             if not ignore_checker.should_ignore(rel_path):
                 entries.append(p)
 
@@ -139,9 +203,9 @@ def walk_tree(
 
 
 def dump_all_contents(
-    dir_path: Path,
-    ignore_checker: IgnoreChecker,
-    root: Path,
+        dir_path: Path,
+        ignore_checker: IgnoreChecker,
+        root: Path,
 ):
     """Выводит содержимое всех файлов (без дерева) в stdout."""
     try:
@@ -150,7 +214,7 @@ def dump_all_contents(
             try:
                 rel_path = p.relative_to(root)
             except ValueError:
-                rel_path = p.name
+                rel_path = Path(p.name)
             if not ignore_checker.should_ignore(rel_path):
                 entries.append(p)
 

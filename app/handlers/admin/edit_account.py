@@ -10,6 +10,7 @@ from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message, ForceReply
 
+from app.database.models import AsyncSessionLocal, Account
 from app.fsm.states import AdminEditStates
 from app.services.account_crud import (
     update_account_filter, update_account_resume, update_account_proxy,

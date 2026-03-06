@@ -1,5 +1,5 @@
 # hh_client/__init__.py
-"""Клиент для взаимодействия с hh.ru через HTTP (aiohttp)."""
+"""Клиент для взаимодействия с hh.ru через Playwright."""
 
 from .client import HHClient
 from .exceptions import (

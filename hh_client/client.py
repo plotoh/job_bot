@@ -1,3 +1,8 @@
+"""
+Асинхронный клиент для hh.ru на основе Playwright.
+Использует реальный браузер для обхода защиты и получения динамического контента.
+"""
+
 import asyncio
 import json
 import logging
@@ -5,7 +10,7 @@ import re
 from typing import Optional, List, Dict, Any
 from urllib.parse import urlparse, parse_qs
 
-import aiohttp
+from playwright.async_api import async_playwright, Browser, Page, ProxySettings
 
 from .exceptions import (
     HHError,
@@ -21,14 +26,12 @@ logger = logging.getLogger(__name__)
 
 
 class HHClient:
-    """Асинхронный клиент для hh.ru."""
+    """
+    Асинхронный клиент для hh.ru на основе Playwright.
+    Поддерживает те же методы, что и предыдущая версия.
+    """
 
     BASE_URL = "https://hh.ru"
-    HEADERS = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    }
 
     def __init__(self, cookies: Dict[str, str], proxy: Optional[str] = None):
         """
@@ -37,112 +40,164 @@ class HHClient:
         """
         self._cookies = cookies
         self._proxy = proxy
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._playwright = None
+        self._browser: Optional[Browser] = None
+        self._page: Optional[Page] = None
+        self._context = None
 
     async def __aenter__(self):
-        await self._create_session()
+        await self._init_browser()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
 
-    async def _create_session(self):
-        """Создаёт aiohttp сессию и устанавливает cookies и прокси."""
-        self._session = aiohttp.ClientSession(headers=self.HEADERS)
-        # Устанавливаем cookies
-        for name, value in self._cookies.items():
-            self._session.cookie_jar.update_cookies({name: value})
-        logger.debug("HHClient session created with cookies: %s", list(self._cookies.keys()))
+    async def _init_browser(self):
+        """Инициализирует браузер, контекст с cookies и прокси, открывает новую страницу."""
+        self._playwright = await async_playwright().start()
+
+        # Настройка прокси, если задан
+        proxy_settings = None
+        if self._proxy:
+            # Парсим строку прокси (ожидается http://user:pass@host:port или host:port)
+            match = re.match(
+                r'(?:(?P<protocol>\w+)://)?(?:(?P<user>[^:]+):(?P<pass>[^@]+)@)?(?P<host>[^:]+):(?P<port>\d+)',
+                self._proxy
+            )
+            if match:
+                proxy_settings = ProxySettings(
+                    server=f"{match.group('protocol') or 'http'}://{match.group('host')}:{match.group('port')}",
+                    username=match.group('user'),
+                    password=match.group('pass')
+                )
+            else:
+                # Простой формат host:port
+                host, port = self._proxy.split(':')
+                proxy_settings = ProxySettings(server=f"http://{host}:{port}")
+
+        # Запуск браузера (headless=True для сервера)
+        self._browser = await self._playwright.chromium.launch(
+            headless=True,
+            proxy=proxy_settings,
+            args=['--disable-blink-features=AutomationControlled']  # скрываем автоматизацию
+        )
+
+        # Создаём контекст с увеличенным размером shared memory для избежания ошибок
+        self._context = await self._browser.new_context(
+            viewport={'width': 1920, 'height': 1080},
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        )
+
+        # Добавляем cookies
+        if self._cookies:
+            # Playwright требует список словарей с определёнными полями
+            cookies_list = [
+                {
+                    "name": name,
+                    "value": value,
+                    "domain": ".hh.ru",
+                    "path": "/",
+                    "secure": False,
+                    "httpOnly": False,
+                    "sameSite": "Lax"
+                }
+                for name, value in self._cookies.items()
+            ]
+            await self._context.add_cookies(cookies_list)
+
+        self._page = await self._context.new_page()
+        logger.debug("HHClient (Playwright) initialized with cookies: %s", list(self._cookies.keys()))
 
     async def close(self):
-        """Закрывает сессию."""
-        if self._session and not self._session.closed:
-            await self._session.close()
-            logger.debug("HHClient session closed")
+        """Корректно закрывает все ресурсы."""
+        if self._page:
+            await self._page.close()
+        if self._context:
+            await self._context.close()
+        if self._browser:
+            await self._browser.close()
+        if self._playwright:
+            await self._playwright.stop()
+        logger.debug("HHClient (Playwright) closed")
 
-    async def _request(
-            self,
-            method: str,
-            path: str,
-            params: Optional[Dict] = None,
-            data: Optional[Dict] = None,
-            headers: Optional[Dict] = None,
-    ) -> str:
+    async def _goto(self, url: str, wait_until: str = "networkidle") -> str:
         """
-        Выполняет HTTP-запрос и возвращает текст ответа.
-        При ошибках выбрасывает соответствующие исключения.
+        Переходит по URL и возвращает HTML страницы.
+        wait_until может быть "load", "domcontentloaded", "networkidle".
         """
-        if not self._session or self._session.closed:
-            await self._create_session()
-
-        url = self.BASE_URL + path
-        request_headers = self.HEADERS.copy()
-        if headers:
-            request_headers.update(headers)
-
+        if not self._page:
+            raise HHNetworkError("Browser not initialized")
         try:
-            logger.debug("Request: %s %s, params=%s", method, url, params)
-            async with self._session.request(
-                    method,
-                    url,
-                    params=params,
-                    data=data,
-                    headers=request_headers,
-                    proxy=self._proxy,
-                    timeout=aiohttp.ClientTimeout(total=30),
-            ) as resp:
-                logger.debug("Response status: %d for %s", resp.status, url)
-                if resp.status == 401:
-                    raise HHAuthError("Unauthorized (cookies may be expired)")
-                if resp.status == 403:
-                    raise HHAuthError("Access forbidden")
-                if resp.status == 429:
+            logger.debug("Navigating to %s", url)
+            response = await self._page.goto(url, wait_until=wait_until, timeout=30000)
+            if not response:
+                raise HHNetworkError("No response from page.goto")
+            status = response.status
+            if status >= 400:
+                if status == 401:
+                    raise HHAuthError("Unauthorized")
+                elif status == 403:
+                    raise HHAuthError("Forbidden")
+                elif status == 429:
                     raise HHRateLimitError("Rate limit exceeded")
-                resp.raise_for_status()
-                return await resp.text()
-        except asyncio.TimeoutError as e:
-            raise HHNetworkError(f"Request timeout: {e}")
-        except aiohttp.ClientError as e:
-            raise HHNetworkError(f"Network error: {e}")
+                else:
+                    raise HHNetworkError(f"HTTP error {status}")
+            # Ждём немного, чтобы убедиться, что динамический контент загрузился
+            await self._page.wait_for_timeout(500)
+            html = await self._page.content()
+            return html
+        except Exception as e:
+            raise HHNetworkError(f"Navigation error: {e}")
 
     @property
     def xsrf_token(self) -> Optional[str]:
         """Возвращает значение cookie _xsrf, если есть."""
-        if self._session:
-            for cookie in self._session.cookie_jar:
-                if cookie.key == "_xsrf":
-                    return cookie.value
-        return None
+        return self._cookies.get("_xsrf")
 
     # === Публичные методы ===
 
     async def search_vacancies(self, search_url: str, max_pages: int = 1) -> List[VacancyPreview]:
         """
-        Ищет вакансии по заданному URL поиска.
+        Ищет вакансии по заданному URL поиска, перебирая страницы.
         Возвращает список VacancyPreview.
         """
         parsed = urlparse(search_url)
-        path = parsed.path
+        base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
         params = parse_qs(parsed.query)
-        # Преобразуем значения из списков в строки (aiohttp может принимать списки, но для безопасности)
-        params = {k: v[0] if v else "" for k, v in params.items()}
+        # Преобразуем значения из списков в строки
+        flat_params = {k: v[0] for k, v in params.items()}
 
         vacancies = []
         last_page = 0
         for page in range(max_pages):
-            page_params = params.copy()
+            page_params = flat_params.copy()
             page_params["page"] = str(page)
-            html = await self._request("GET", path, params=page_params)
-            # Отладка: сохраним HTML в лог при уровне DEBUG
-            logger.info("Search page HTML (first 500 chars): %s", html[:500])
+            # Строим URL с параметрами
+            query = "&".join(f"{k}={v}" for k, v in page_params.items())
+            url = f"{base_url}?{query}"
+
+            try:
+                html = await self._goto(url, wait_until="domcontentloaded")
+            except HHError as e:
+                logger.error("Failed to load search page %d: %s", page, e)
+                break
+
+            logger.info("Search page %d loaded, length=%d", page, len(html))
+
+            # Сохраняем HTML для отладки (если уровень DEBUG)
+            if logger.isEnabledFor(logging.DEBUG):
+                with open(f"debug_search_page_{page}.html", "w", encoding="utf-8") as f:
+                    f.write(html)
+
             try:
                 page_vacancies = extract_json_from_html(html, "vacancies")
             except HHParseError as e:
                 logger.error("Failed to extract vacancies from page %d: %s", page, e)
-                with open(f"debug_page_{page}.html", "w", encoding="utf-8") as f:
-                    f.write(html)
-                logger.error("HTML snippet: %s", html[:5000])
+                # Если не удалось найти вакансии, возможно, страница изменилась – пробуем найти данные в другом месте
+                # Например, в window.__INITIAL_STATE__ (но это потребует дополнительного парсинга)
+                # Пока просто прерываем
                 break
+
             for raw in page_vacancies:
                 try:
                     vacancy = VacancyPreview.model_validate(raw)
@@ -150,17 +205,18 @@ class HHClient:
                 except Exception as e:
                     logger.warning("Failed to parse vacancy: %s", e, exc_info=True)
             last_page = page
+            # Задержка между страницами, чтобы не нагружать сервер
             await asyncio.sleep(2)
 
         logger.info("Found %d vacancies across %d pages", len(vacancies), last_page + 1)
-
         return vacancies
 
     async def get_vacancy_details(self, vacancy_id: int) -> VacancyDetails:
         """
         Получает детальную информацию о вакансии.
         """
-        html = await self._request("GET", f"/vacancy/{vacancy_id}")
+        url = f"{self.BASE_URL}/vacancy/{vacancy_id}"
+        html = await self._goto(url, wait_until="networkidle")
         description = extract_description(html)
         skills = extract_skills(html)
         return VacancyDetails(
@@ -174,105 +230,64 @@ class HHClient:
         Получает данные о тесте для вакансии (если есть).
         Возвращает словарь с полями uidPk, guid, startTime, tasks и т.д.
         """
-        url = f"/applicant/vacancy_response?vacancyId={vacancy_id}&startedWithQuestion=false"
-        html = await self._request("GET", url)
+        url = f"{self.BASE_URL}/applicant/vacancy_response?vacancyId={vacancy_id}&startedWithQuestion=false"
+        html = await self._goto(url, wait_until="networkidle")
         tests_data = extract_json_from_html(html, "vacancyTests")
         return tests_data.get(str(vacancy_id), {})
 
-    async def apply(
-            self,
-            vacancy_id: int,
-            resume_hash: str,
-            letter: str = "",
-    ) -> ApplyResult:
+    async def apply(self, vacancy_id: int, resume_hash: str, letter: str = "") -> ApplyResult:
         """
-        Отправляет отклик на вакансию.
-        Автоматически определяет наличие теста и формирует соответствующий payload.
+        Отправляет отклик на вакансию через браузер.
         """
-        # Проверяем, есть ли тест
-        try:
-            tests = await self.get_vacancy_tests(vacancy_id)
-            has_test = bool(tests)
-        except Exception as e:
-            logger.warning("Failed to get tests for vacancy %d: %s", vacancy_id, e)
-            has_test = False
+        vacancy_url = f"{self.BASE_URL}/vacancy/{vacancy_id}"
+        await self._goto(vacancy_url, wait_until="networkidle")
 
-        if has_test:
-            # Формируем payload для теста (адаптация из кода друга)
-            payload = {
-                "_xsrf": self.xsrf_token,
-                "vacancy_id": vacancy_id,
-                "resume_hash": resume_hash,
-                "letter": letter,
-                "ignore_postponed": "true",
-                "uidPk": tests.get("uidPk"),
-                "guid": tests.get("guid"),
-                "startTime": tests.get("startTime"),
-                "testRequired": tests.get("required", False),
-                "incomplete": "false",
-                "lux": "true",
-                "withoutTest": "no",
-            }
-            # Добавляем ответы на задачи
-            for task in tests.get("tasks", []):
-                task_id = task["id"]
-                solutions = task.get("candidateSolutions", [])
-                if solutions:
-                    # Берём вариант из середины
-                    answer_id = solutions[len(solutions) // 2]["id"]
-                    payload[f"task_{task_id}"] = answer_id
-                else:
-                    # Если нет вариантов, ставим "Да"
-                    payload[f"task_{task_id}_text"] = "Да"
+        # Ищем кнопку отклика (селектор может меняться, но обычно это a с data-qa="vacancy-response-link")
+        response_button = await self._page.query_selector('a[data-qa="vacancy-response-link"]')
+        if not response_button:
+            # Если не нашли, возможно, это другая страница или уже откликнулись
+            logger.error("Response button not found for vacancy %d", vacancy_id)
+            raise HHParseError("Response button not found")
 
-            referer = self.BASE_URL + f"/vacancy/{vacancy_id}"
-            result_data = await self._send_response(payload, referer)
-        else:
-            # Простой отклик
-            payload = {
-                "_xsrf": self.xsrf_token,
-                "vacancy_id": vacancy_id,
-                "resume_hash": resume_hash,
-                "letter": letter,
-                "ignore_postponed": "true",
-            }
-            referer = self.BASE_URL + f"/vacancy/{vacancy_id}"
-            result_data = await self._send_response(payload, referer)
+        await response_button.click()
+        await self._page.wait_for_load_state("networkidle")
 
-        # Анализ результата
-        if result_data.get("success"):
+        # Если есть поле для сопроводительного письма, заполняем
+        letter_field = await self._page.query_selector('textarea[data-qa="vacancy-response-letter"]')
+        if letter_field and letter:
+            await letter_field.fill(letter)
+
+        # Ищем кнопку отправки (обычно button с data-qa="vacancy-response-submit")
+        submit_button = await self._page.query_selector('button[data-qa="vacancy-response-submit"]')
+        if not submit_button:
+            logger.error("Submit button not found for vacancy %d", vacancy_id)
+            raise HHParseError("Submit button not found")
+
+        await submit_button.click()
+        await self._page.wait_for_load_state("networkidle")
+
+        # Проверяем результат – обычно появляется сообщение об успехе или ошибке
+        html = await self._page.content()
+        if "Ваш отклик отправлен" in html or "success" in html:
+            logger.info("Successfully applied to vacancy %d", vacancy_id)
             return ApplyResult(success=True)
         else:
-            error = result_data.get("error", "Unknown error")
-            if error == "negotiations-limit-exceeded":
-                return ApplyResult(success=False, error=error, limit_exceeded=True)
-            return ApplyResult(success=False, error=error)
-
-    async def _send_response(self, payload: Dict, referer: str) -> Dict:
-        """Внутренний метод для отправки POST-запроса на отклик."""
-        headers = {
-            "X-Hhtmfrom": "vacancy",
-            "X-Hhtmsource": "vacancy_response",
-            "X-Requested-With": "XMLHttpRequest",
-            "X-Xsrftoken": self.xsrf_token,
-            "Referer": referer,
-        }
-        # Преобразуем payload в формат application/x-www-form-urlencoded
-        data = aiohttp.FormData()
-        for key, value in payload.items():
-            if value is not None:
-                data.add_field(key, str(value))
-
-        html = await self._request("POST", "/applicant/vacancy_response/popup", data=data, headers=headers)
-        try:
-            return json.loads(html)
-        except json.JSONDecodeError as e:
-            raise HHParseError(f"Failed to parse response JSON: {e}")
+            # Ищем сообщение об ошибке
+            error_elem = await self._page.query_selector('div[data-qa="vacancy-response-error"]')
+            error_text = await error_elem.text_content() if error_elem else "Unknown error"
+            if "negotiations-limit-exceeded" in error_text:
+                logger.warning("Daily limit exceeded on hh.ru for vacancy %d", vacancy_id)
+                return ApplyResult(success=False, error=error_text, limit_exceeded=True)
+            logger.error("Failed to apply to vacancy %d: %s", vacancy_id, error_text)
+            return ApplyResult(success=False, error=error_text)
 
     async def is_logged_in(self) -> bool:
-        """Проверяет, валидны ли текущие cookies."""
+        """
+        Проверяет, валидны ли текущие cookies, загружая страницу резюме.
+        """
         try:
-            html = await self._request("GET", "/applicant/resumes")
+            html = await self._goto(f"{self.BASE_URL}/applicant/resumes", wait_until="domcontentloaded")
+            # Наличие 'latestResumeHash' говорит о том, что мы авторизованы
             return 'latestResumeHash' in html
         except HHAuthError:
             return False
@@ -281,43 +296,27 @@ class HHClient:
 
     async def login(self, username: str, password: str) -> Dict[str, str]:
         """
-        Выполняет вход и возвращает новые cookies.
-        ВНИМАНИЕ: этот метод создаёт новую сессию, не использует текущую.
-        После получения cookies можно создать новый экземпляр HHClient.
+        Выполняет вход на hh.ru через браузер и возвращает новые cookies.
         """
-        # Для логина используем отдельную сессию без cookies
-        async with aiohttp.ClientSession() as session:
-            session.headers.update(self.HEADERS)
-            # 1. Получаем страницу логина для извлечения _xsrf
-            resp = await session.get("https://hh.ru/account/login", proxy=self._proxy)
-            html = await resp.text()
-            xsrf_match = re.search(r'name="_xsrf" value="([^"]+)"', html)
-            if not xsrf_match:
-                raise HHAuthError("Could not extract _xsrf token")
-            xsrf = xsrf_match.group(1)
+        # Открываем страницу логина
+        await self._goto(f"{self.BASE_URL}/account/login", wait_until="networkidle")
 
-            # 2. Отправляем POST с логином/паролем
-            login_data = {
-                "_xsrf": xsrf,
-                "backUrl": "https://hh.ru/",
-                "username": username,
-                "password": password,
-                "action": "Войти",
-            }
-            resp = await session.post(
-                "https://hh.ru/account/login",
-                data=login_data,
-                allow_redirects=False,
-                proxy=self._proxy,
-            )
-            if resp.status == 302 and resp.headers.get("Location") == "https://hh.ru/":
-                # Успех
-                cookies = {}
-                for cookie in session.cookie_jar:
-                    cookies[cookie.key] = cookie.value
-                return cookies
-            else:
-                # Пытаемся прочитать ошибку
-                text = await resp.text()
-                logger.error("Login failed: status %d, body %s", resp.status, text[:200])
-                raise HHAuthError("Login failed")
+        # Заполняем форму
+        await self._page.fill('input[name="username"]', username)
+        await self._page.fill('input[name="password"]', password)
+        await self._page.click('button[type="submit"]')
+        await self._page.wait_for_load_state("networkidle")
+
+        # Проверяем успешность – после успешного входа обычно редирект на главную
+        if self._page.url == f"{self.BASE_URL}/":
+            # Получаем cookies из контекста
+            cookies = await self._context.cookies()
+            cookie_dict = {c["name"]: c["value"] for c in cookies}
+            logger.info("Login successful for user %s", username)
+            return cookie_dict
+        else:
+            # Возможно, появилось сообщение об ошибке
+            error_elem = await self._page.query_selector('.error, .alert')
+            error_text = await error_elem.text_content() if error_elem else "Unknown error"
+            logger.error("Login failed for user %s: %s", username, error_text)
+            raise HHAuthError(f"Login failed: {error_text}")

@@ -68,3 +68,4 @@ scripts/debug_*.html
 scripts/debug_*.py
 scripts/*.dump
 scripts/*.json
+/hh_client/NOT_ACTUAL_client.py
