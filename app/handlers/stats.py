@@ -1,9 +1,9 @@
 # app/handlers/stats.py
 from aiogram import types, F, Router
 from sqlalchemy import select, func, and_
-from datetime import date
+from datetime import date, timedelta
 
-from app.database.models import AsyncSessionLocal, Account, Response, Invitation
+from app.database.models import AsyncSessionLocal, Account, Response, Invitation, DailyStats
 from app.keyboards.reply import get_main_keyboard
 from app.services.account_crud import get_account
 from app.services.account_data import format_account_text
@@ -52,10 +52,26 @@ async def show_stats(message: types.Message):
 
         remaining = max(0, account.daily_response_limit - account.responses_today)
 
+    # Получаем статистику за последние 7 дней
+    seven_days_ago = date.today() - timedelta(days=6)
+    stmt_daily = select(DailyStats).where(
+        and_(
+            DailyStats.account_id == account.id,
+            DailyStats.date >= seven_days_ago
+        )
+    ).order_by(DailyStats.date)
+    daily_stats = (await session.execute(stmt_daily)).scalars().all()
+
+    daily_lines = []
+    for ds in daily_stats:
+        daily_lines.append(f"{ds.date.strftime('%d.%m')}: {ds.responses_count} откликов")
+    daily_text = "\n".join(daily_lines) if daily_lines else "Нет данных за последние 7 дней"
+
     text = (
         f"📊 **Статистика для аккаунта {account.username}**\n\n"
         f"📅 Откликов сегодня: {today_responses} (осталось: {remaining})\n"
         f"📦 Всего откликов: {total_responses}\n"
-        f"📬 Приглашений на собеседование: {total_invitations}"
+        f"📬 Приглашений на собеседование: {total_invitations}\n\n"
+        f"**Последние 7 дней:**\n{daily_text}"
     )
     await message.answer(text, reply_markup=get_main_keyboard(message.from_user.id), parse_mode="Markdown")

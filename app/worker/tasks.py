@@ -10,9 +10,9 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from app.config import settings
-from app.database.models import Account, Response, AccountVacancy
+from app.database.models import Account, Response, AccountVacancy, Invitation
 from app.services.vacancy import fetch_and_save_new_vacancies
-from app.services.response import process_pending_responses, is_working_hours
+from app.services.response import process_pending_responses, is_working_hours, _update_daily_stats
 from app.services.account_crud import reset_daily_limit_if_needed
 from app.utils.proxy_rotator import get_proxy_for_account
 from app.utils.encryption import decrypt_password
@@ -232,3 +232,32 @@ async def _refresh_all_cookies():
                     logger.info("Cookies refreshed for account %d", account.id)
                 except Exception as e:
                     logger.error("Failed to refresh cookies for account %d: %s", account.id, e)
+
+
+@celery_app.task
+def parse_invitations_for_account(account_id: int):
+    run_async(_parse_invitations_for_account(account_id))
+
+async def _parse_invitations_for_account(account_id: int):
+    async with get_db_session()() as session:
+        account = await session.get(Account, account_id)
+        if not account:
+            return
+        # Получаем cookies (как в других задачах)
+        async with HHClient(account.cookies or {}, account.proxy) as client:
+            # Метод, который будет возвращать список приглашений
+            invitations_data = await client.fetch_invitations()
+        for inv_data in invitations_data:
+            # Проверяем, есть ли уже такое приглашение в БД (по дате, вакансии)
+            # Если нет – создаём запись Invitation
+            new_inv = Invitation(
+                account_id=account.id,
+                vacancy_hh_id=inv_data['vacancy_hh_id'],
+                company=inv_data['company'],
+                message=inv_data.get('message'),
+                invited_at=inv_data['invited_at']
+            )
+            session.add(new_inv)
+            # !!! ВАЖНО: обновляем дневную статистику
+            await _update_daily_stats(account.id, session, increment_invitations=True)
+        await session.commit()

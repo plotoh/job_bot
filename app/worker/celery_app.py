@@ -16,10 +16,10 @@ celery_app.conf.beat_schedule = {
         'task': 'app.worker.tasks.parse_all_vacancies',
         'schedule': crontab(hour=8, minute=0),
     },
-    'generate-and-send-responses': {
-        'task': 'app.worker.tasks.generate_and_send_responses',
-        'schedule': 30 * 60,
-    },
+    # 'generate-and-send-responses': {
+    #     'task': 'app.worker.tasks.generate_and_send_responses',
+    #     'schedule': 30 * 60,
+    # },
     'reset-daily-limits': {
         'task': 'app.worker.tasks.reset_daily_limits',
         'schedule': crontab(hour=0, minute=0),
@@ -27,5 +27,9 @@ celery_app.conf.beat_schedule = {
     'refresh-all-cookies': {
         'task': 'app.worker.tasks.refresh_all_cookies',
         'schedule': crontab(minute=0, hour='*/12'),
+    },
+    'parse-invitations': {
+        'task': 'app.worker.tasks.parse_invitations_for_all',
+        'schedule': 40 * 60,  # каждые 30 минут
     },
 }

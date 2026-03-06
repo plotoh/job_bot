@@ -2,16 +2,45 @@
 import asyncio
 import logging
 import random
-from datetime import datetime
+from datetime import datetime, date
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 
-from app.database.models import Account, Vacancy, Response, AccountVacancy
+from app.database.models import Account, Vacancy, Response, AccountVacancy, DailyStats
 from app.services.letter_generator import generate_cover_letter
 from hh_client import HHClient, ApplyResult
 
 logger = logging.getLogger(__name__)
+
+
+async def _update_daily_stats(account_id: int, session: AsyncSession, increment_responses: bool = True,
+                              increment_invitations: bool = False):
+    """Обновляет статистику дня для аккаунта."""
+    today = date.today()
+    stmt = select(DailyStats).where(
+        and_(
+            DailyStats.account_id == account_id,
+            DailyStats.date == today
+        )
+    )
+    result = await session.execute(stmt)
+    stats = result.scalar_one_or_none()
+
+    if stats is None:
+        stats = DailyStats(
+            account_id=account_id,
+            date=today,
+            responses_count=1 if increment_responses else 0,
+            invitations_count=1 if increment_invitations else 0
+        )
+        session.add(stats)
+    else:
+        if increment_responses:
+            stats.responses_count += 1
+        if increment_invitations:
+            stats.invitations_count += 1
+    await session.flush()
 
 
 async def send_response_for_vacancy(
@@ -63,7 +92,7 @@ async def send_response_for_vacancy(
 
     try:
         async with HHClient(account.cookies or {}, account.proxy) as client:
-            result = await client.apply(vacancy.id, account.resume_id, letter)
+            result = await client.apply(int(vacancy.hh_id), account.resume_id, letter)
     except Exception as e:
         logger.error("Error sending response for vacancy %d: %s", vacancy.id, e, exc_info=True)
         response.status = "error"
@@ -75,9 +104,12 @@ async def send_response_for_vacancy(
         response.status = "sent"
         response.sent_at = datetime.utcnow()
         account.responses_today += 1
+        # Обновляем дневную статистику
+        await _update_daily_stats(account.id, session, increment_responses=True)
         logger.info("Response %d sent successfully for vacancy %d", response.id, vacancy.id)
         await session.commit()
         return True
+
     else:
         response.status = "error"
         response.error_message = result.error

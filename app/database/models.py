@@ -1,8 +1,9 @@
 from datetime import datetime, date
+from typing import Optional
 
 from sqlalchemy import (
     JSON, String, Text, Boolean, DateTime, ForeignKey,
-    Integer, Date, BigInteger
+    Integer, Date, BigInteger, UniqueConstraint, Table, Column
 )
 from sqlalchemy.ext.asyncio import (
     AsyncAttrs, async_sessionmaker, create_async_engine
@@ -10,7 +11,6 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from app.config import settings
-
 
 # ==================== Настройка движка и сессии ====================
 
@@ -27,6 +27,15 @@ AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 class Base(AsyncAttrs, DeclarativeBase):
     pass
+
+
+# Таблица для связи многие-ко-многим (пользователи и каналы)
+user_channels = Table(
+    'user_channels',
+    Base.metadata,
+    Column('user_id', BigInteger, ForeignKey('accounts.id'), primary_key=True),
+    Column('channel_id', BigInteger, ForeignKey('telegram_channels.id'), primary_key=True)
+)
 
 
 # ==================== Модель аккаунта пользователя ====================
@@ -75,6 +84,8 @@ class Account(Base):
     account_vacancies = relationship("AccountVacancy", back_populates="account", cascade="all, delete-orphan")
     responses = relationship("Response", back_populates="account", cascade="all, delete-orphan")
     invitations = relationship("Invitation", back_populates="account", cascade="all, delete-orphan")
+    daily_stats = relationship("DailyStats", back_populates="account", cascade="all, delete-orphan")
+    channels = relationship("TelegramChannel", secondary=user_channels, back_populates="users")
 
 
 # ==================== Модель вакансии ====================
@@ -112,6 +123,27 @@ class AccountVacancy(Base):
     response = relationship("Response", foreign_keys=[response_id])
 
 
+# ==================== Модель ежедневной статистики ====================
+
+class DailyStats(Base):
+    __tablename__ = 'daily_stats'
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('accounts.id'), nullable=False)
+    date: Mapped[date] = mapped_column(Date, nullable=False)
+    responses_count: Mapped[int] = mapped_column(Integer, default=0)
+    invitations_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Уникальность (account_id, date)
+    __table_args__ = (
+        UniqueConstraint('account_id', 'date', name='uq_daily_stats_account_date'),
+    )
+
+    account = relationship("Account", back_populates="daily_stats")
+
+
 # ==================== Модель отклика ====================
 
 class Response(Base):
@@ -146,3 +178,33 @@ class Invitation(Base):
 
     # --- Связи ---
     account = relationship("Account", back_populates="invitations")
+
+
+class TelegramChannel(Base):
+    __tablename__ = 'telegram_channels'
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)  # chat_id канала
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    invite_link: Mapped[Optional[str]] = mapped_column(String(500))  # ссылка-приглашение (если нужно)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    # Связь с пользователями (кто имеет доступ)
+    users = relationship("Account", secondary=user_channels, back_populates="channels")
+
+
+class ChannelVacancy(Base):
+    __tablename__ = 'channel_vacancies'
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    channel_id: Mapped[int] = mapped_column(BigInteger, ForeignKey('telegram_channels.id'), nullable=False)
+    message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)  # id сообщения в канале
+    text: Mapped[str] = mapped_column(Text)  # полный текст сообщения
+    published_at: Mapped[datetime] = mapped_column(DateTime)  # дата публикации
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    is_parsed: Mapped[bool] = mapped_column(Boolean, default=False)  # обработано ли (для выдачи)
+
+    # Индекс для быстрого поиска новых сообщений
+    __table_args__ = (
+        UniqueConstraint('channel_id', 'message_id', name='uq_channel_message'),
+    )
